@@ -1,11 +1,36 @@
 #!/usr/bin/env ts-node
 
+import fs   from 'fs';
+import path from 'path';
+import dotenv from 'dotenv';
+
+// dotenv.config() only handles UTF-8; Windows editors sometimes save .env as
+// UTF-16 LE. Detect by checking for null bytes in odd positions and decode
+// accordingly, then hand the parsed string to dotenv.parse().
+(function loadDotEnv() {
+  const p = path.resolve(process.cwd(), '.env');
+  if (!fs.existsSync(p)) return;
+  const raw = fs.readFileSync(p);
+  let content: string;
+  if ((raw[0] === 0xFF && raw[1] === 0xFE) || (raw.length >= 4 && raw[3] === 0x00)) {
+    // UTF-16 LE: skip the 2-byte BOM (or corrupted BOM) then decode
+    content = raw.slice(2).toString('utf16le');
+  } else {
+    content = raw.toString('utf8');
+  }
+  const parsed = dotenv.parse(content);
+  for (const [k, v] of Object.entries(parsed)) {
+    process.env[k] ??= v;
+  }
+})();
+
 import { Command } from 'commander';
 import { Client } from '@modelcontextprotocol/sdk/client';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp';
+import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 
-// ─── JSON Schema validator ────────────────────────────────────────────────────
+// ─── JSON Schema validator (Layer 1 — unchanged) ─────────────────────────────
 
 const JSON_SCHEMA_TYPES = [
   'string', 'number', 'integer', 'boolean', 'null', 'object', 'array',
@@ -67,6 +92,7 @@ const ToolInputSchemaValidator = z.object({
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+// Layer 1
 interface ToolResult {
   name:         string;
   title?:       string;
@@ -75,7 +101,31 @@ interface ToolResult {
   errors?:      string[];
 }
 
-// ─── Validation ───────────────────────────────────────────────────────────────
+// Convenience alias for a single tool returned by the MCP client
+type McpTool = Awaited<ReturnType<typeof client.listTools>>['tools'][number];
+
+// Layer 2
+interface ClarityResult {
+  name:    string;
+  score:   number;   // 1–10
+  verdict: string;   // one-line explanation
+}
+
+interface ConfusionPair {
+  tool1:  string;
+  tool2:  string;
+  reason: string;
+}
+
+interface SimulationResult {
+  request:      string;
+  expectedTool: string;
+  pickedTool:   string;
+  pickedArgs:   Record<string, unknown>;
+  correct:      boolean;
+}
+
+// ─── Layer 1: Schema validation ───────────────────────────────────────────────
 
 function validateSchema(schema: unknown): { passed: boolean; errors?: string[] } {
   const result = ToolInputSchemaValidator.safeParse(schema);
@@ -98,6 +148,7 @@ const YELLOW = '\x1b[33m';
 const BOLD   = '\x1b[1m';
 const RESET  = '\x1b[0m';
 const CYAN   = '\x1b[36m';
+const DIM    = '\x1b[2m';
 
 function divider(char = '─', width = 62) {
   console.log(char.repeat(width));
@@ -107,11 +158,297 @@ function truncate(s: string, max: number) {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
+function step(msg: string) {
+  process.stdout.write(`  ${msg}…`);
+}
+
+function stepDone(label?: string) {
+  console.log(`\r  ${label ?? ''}${' '.repeat(50)}\r  ${label ?? ''}${GREEN}done${RESET}       `);
+}
+
+function stepDoneCustom(prefix: string, suffix: string) {
+  const pad = ' '.repeat(Math.max(0, 50 - prefix.length - suffix.length));
+  process.stdout.write(`\r  ${prefix}${suffix}${pad}\n`);
+}
+
+// ─── Layer 2: Zod schemas for Claude's JSON responses ────────────────────────
+
+const ClarityResponseSchema = z.array(z.object({
+  name:    z.string(),
+  score:   z.number(),
+  verdict: z.string(),
+}));
+
+const ConfusionResponseSchema = z.object({
+  confusedPairs: z.array(z.object({
+    tool1:  z.string(),
+    tool2:  z.string(),
+    reason: z.string(),
+  })),
+});
+
+const ScenariosResponseSchema = z.array(z.object({
+  request:      z.string(),
+  expectedTool: z.string(),
+}));
+
+const ToolPickResponseSchema = z.object({
+  tool:      z.string(),
+  arguments: z.record(z.string(), z.unknown()).optional(),
+});
+
+// ─── Layer 2: AI helpers ──────────────────────────────────────────────────────
+
+function extractJSON(text: string): unknown {
+  // Strip markdown code fences if present
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/s);
+  return JSON.parse(fenced ? fenced[1].trim() : text.trim());
+}
+
+function toolsToPromptText(tools: McpTool[]): string {
+  return JSON.stringify(
+    tools.map(t => ({
+      name:        t.name,
+      description: t.description ?? '(no description)',
+      inputSchema: t.inputSchema,
+    })),
+    null, 2,
+  );
+}
+
+async function callClaude(
+  anthropic: Anthropic,
+  system: string,
+  user: string,
+  maxTokens = 1024,
+): Promise<string> {
+  const res = await anthropic.messages.create({
+    model:      'claude-haiku-4-5-20251001',
+    max_tokens: maxTokens,
+    system,
+    messages:   [{ role: 'user', content: user }],
+  });
+  const block = res.content.find(b => b.type === 'text');
+  return block?.type === 'text' ? block.text : '';
+}
+
+// ─── Layer 2: Check 1 — Description Clarity ──────────────────────────────────
+
+async function check1Clarity(
+  tools: McpTool[],
+  anthropic: Anthropic,
+): Promise<ClarityResult[]> {
+  const text = await callClaude(
+    anthropic,
+    'You are a tool quality evaluator for MCP servers. Respond only with valid JSON — no prose, no markdown.',
+    `Evaluate the clarity of these MCP tools for an AI agent.
+For each tool, rate its clarity 1–10 and give a one-line verdict: would an AI reliably know when to use it and what arguments to pass?
+
+Tools:
+${toolsToPromptText(tools)}
+
+Respond with a JSON array in the same order as the input:
+[{"name":"<tool_name>","score":<1-10>,"verdict":"<one-line explanation>"}]`,
+  );
+  return ClarityResponseSchema.parse(extractJSON(text));
+}
+
+// ─── Layer 2: Check 2 — Tool Confusion Detection ─────────────────────────────
+
+async function check2Confusion(
+  tools: McpTool[],
+  anthropic: Anthropic,
+): Promise<ConfusionPair[]> {
+  const text = await callClaude(
+    anthropic,
+    'You detect potential confusion between MCP tools. Respond only with valid JSON.',
+    `Review these MCP tools and identify every pair whose descriptions are similar enough that an AI agent might pick the wrong one.
+
+Tools:
+${toolsToPromptText(tools)}
+
+Respond with JSON:
+{"confusedPairs":[{"tool1":"<name>","tool2":"<name>","reason":"<brief explanation>"}]}
+
+If no pairs are confused, return {"confusedPairs":[]}`,
+  );
+  const parsed = ConfusionResponseSchema.parse(extractJSON(text));
+  return parsed.confusedPairs;
+}
+
+// ─── Layer 2: Check 3 — Scenario Simulation ──────────────────────────────────
+
+async function check3Simulation(
+  tools: McpTool[],
+  anthropic: Anthropic,
+): Promise<SimulationResult[]> {
+  // Phase A: generate 5 scenarios with expected tools
+  const genText = await callClaude(
+    anthropic,
+    'You generate realistic test scenarios for MCP tools. Respond only with valid JSON.',
+    `Given these MCP tools, generate exactly 5 diverse, realistic user request scenarios.
+Each scenario must have a clear single correct tool.
+
+Tools:
+${toolsToPromptText(tools)}
+
+Respond with a JSON array of exactly 5 items:
+[{"request":"<user request>","expectedTool":"<tool_name>"}]`,
+    1024,
+  );
+  const scenarios = ScenariosResponseSchema.parse(extractJSON(genText));
+
+  // Phase B: for each scenario, ask Claude to pick a tool independently
+  const toolMenu = tools
+    .map(t => `• ${t.name}: ${t.description ?? '(no description)'}`)
+    .join('\n');
+
+  const picks = await Promise.all(scenarios.map(s =>
+    callClaude(
+      anthropic,
+      'You are an AI agent selecting MCP tools. Respond only with valid JSON.',
+      `Available tools:\n${toolMenu}\n\nUser request: "${s.request}"\n\nWhich tool would you use and what arguments would you pass?\nRespond with JSON: {"tool":"<tool_name>","arguments":{<key>:<value>,...}}`,
+      512,
+    ),
+  ));
+
+  return scenarios.map((s, i) => {
+    let pick: z.infer<typeof ToolPickResponseSchema>;
+    try {
+      pick = ToolPickResponseSchema.parse(extractJSON(picks[i]));
+    } catch {
+      pick = { tool: '(parse error)', arguments: {} };
+    }
+    return {
+      request:      s.request,
+      expectedTool: s.expectedTool,
+      pickedTool:   pick.tool,
+      pickedArgs:   pick.arguments ?? {},
+      correct:      pick.tool === s.expectedTool,
+    };
+  });
+}
+
+// ─── Layer 2: orchestrator ────────────────────────────────────────────────────
+
+async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<void> {
+  console.log();
+  divider('═');
+  console.log(`${BOLD}  Layer 2 — AI Reasoning Checks${RESET}  ${DIM}(claude-haiku-4-5)${RESET}`);
+  divider('═');
+
+  // ── Check 1: Description Clarity ─────────────────────────────────────────
+  console.log(`\n  ${BOLD}CHECK 1 · DESCRIPTION CLARITY${RESET}\n`);
+  divider();
+  console.log();
+
+  try {
+    step('Analysing clarity');
+    const results = await check1Clarity(tools, anthropic);
+    stepDoneCustom('Analysing clarity… ', `${GREEN}done${RESET}`);
+    console.log();
+
+    for (let i = 0; i < results.length; i++) {
+      const r     = results[i];
+      const score = Math.round(r.score);
+      const color = score >= 8 ? GREEN : score >= 5 ? YELLOW : RED;
+      console.log(`  ${BOLD}[${i + 1}/${results.length}] ${r.name}${RESET}`);
+      console.log(`       Clarity: ${color}${BOLD}${score}/10${RESET}  — ${r.verdict}`);
+      console.log();
+    }
+  } catch (err) {
+    console.log(`\r  ${RED}Check 1 failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+  }
+
+  // ── Check 2: Tool Confusion Detection ────────────────────────────────────
+  divider();
+  console.log(`\n  ${BOLD}CHECK 2 · TOOL CONFUSION DETECTION${RESET}\n`);
+  divider();
+  console.log();
+
+  if (tools.length < 2) {
+    console.log(`  ${YELLOW}⚠  Only ${tools.length} tool — no pairs to compare.${RESET}\n`);
+  } else {
+    try {
+      step('Detecting confusion');
+      const pairs = await check2Confusion(tools, anthropic);
+      stepDoneCustom('Detecting confusion… ', `${GREEN}done${RESET}`);
+      console.log();
+
+      if (pairs.length === 0) {
+        console.log(`  ${GREEN}✓ No confused tool pairs detected.${RESET}\n`);
+      } else {
+        for (const p of pairs) {
+          console.log(`  ${YELLOW}⚠ ${BOLD}${p.tool1}${RESET}${YELLOW} ↔ ${BOLD}${p.tool2}${RESET}`);
+          console.log(`    ${p.reason}\n`);
+        }
+      }
+    } catch (err) {
+      console.log(`\r  ${RED}Check 2 failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    }
+  }
+
+  // ── Check 3: Scenario Simulation ─────────────────────────────────────────
+  divider();
+  console.log(`\n  ${BOLD}CHECK 3 · SCENARIO SIMULATION${RESET}\n`);
+  divider();
+  console.log();
+
+  try {
+    step('Running scenario simulation (5 tests)');
+    const sims = await check3Simulation(tools, anthropic);
+    stepDoneCustom('Running scenario simulation… ', `${GREEN}done${RESET}`);
+    console.log();
+
+    for (let i = 0; i < sims.length; i++) {
+      const s     = sims[i];
+      const badge = s.correct ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
+      const argsStr = Object.keys(s.pickedArgs).length > 0
+        ? JSON.stringify(s.pickedArgs)
+        : '{}';
+
+      console.log(`  ${DIM}Scenario ${i + 1}:${RESET} "${truncate(s.request, 78)}"`);
+      console.log(`    Expected: ${BOLD}${s.expectedTool}${RESET}  →  Picked: ${BOLD}${s.pickedTool}${RESET}  ${badge}`);
+      console.log(`    Args:     ${DIM}${truncate(argsStr, 80)}${RESET}`);
+      console.log();
+    }
+
+    const correct = sims.filter(s => s.correct).length;
+    const total   = sims.length;
+    const scoreColor = correct === total ? GREEN : correct >= Math.ceil(total / 2) ? YELLOW : RED;
+    console.log(`  ${BOLD}Score: ${scoreColor}${correct}/${total} passed${RESET}\n`);
+  } catch (err) {
+    console.log(`\r  ${RED}Check 3 failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+  }
+
+  divider('═');
+  console.log();
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-async function checkServer(url: string): Promise<void> {
+// Need a top-level reference so the McpTool alias resolves; the client instance
+// used here is immediately replaced inside checkServer — this is type-only.
+declare const client: Client;
+
+async function checkServer(url: string, runAi: boolean): Promise<void> {
+  // Validate AI prerequisites before spending time on MCP connection
+  let anthropic: Anthropic | undefined;
+  if (runAi) {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      console.error(
+        `\n  ${RED}Error: ANTHROPIC_API_KEY is not set.` +
+        `\n  Add it to a .env file in this directory or export it in your shell.${RESET}\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    anthropic = new Anthropic({ apiKey });
+  }
+
   const transport = new StreamableHTTPClientTransport(new URL(url));
-  const client    = new Client(
+  const mcpClient = new Client(
     { name: 'mcp-checker', version: '1.0.0' },
     { capabilities: {} }
   );
@@ -125,15 +462,15 @@ async function checkServer(url: string): Promise<void> {
 
     // ── Connect ──────────────────────────────────────────────────────────────
     process.stdout.write('  Connecting…');
-    await client.connect(transport);
+    await mcpClient.connect(transport);
     console.log(`\r  Connecting… ${GREEN}connected${RESET}       `);
 
-    const serverInfo = client.getServerVersion();
+    const serverInfo = mcpClient.getServerVersion();
     if (serverInfo) {
       console.log(`  Server: ${BOLD}${serverInfo.name}${RESET} v${serverInfo.version}`);
     }
 
-    const caps = client.getServerCapabilities();
+    const caps = mcpClient.getServerCapabilities();
     if (!caps?.tools) {
       console.log(`\n  ${YELLOW}⚠  Server does not advertise tool support.${RESET}\n`);
       return;
@@ -142,10 +479,10 @@ async function checkServer(url: string): Promise<void> {
     // ── List tools (paginated) ────────────────────────────────────────────────
     process.stdout.write('  Fetching tools…');
 
-    const tools: Awaited<ReturnType<typeof client.listTools>>['tools'] = [];
+    const tools: Awaited<ReturnType<typeof mcpClient.listTools>>['tools'] = [];
     let cursor: string | undefined;
     do {
-      const page = await client.listTools(cursor ? { cursor } : undefined);
+      const page = await mcpClient.listTools(cursor ? { cursor } : undefined);
       tools.push(...page.tools);
       cursor = page.nextCursor;
     } while (cursor);
@@ -155,7 +492,7 @@ async function checkServer(url: string): Promise<void> {
     divider();
     console.log();
 
-    // ── Validate & print each tool ────────────────────────────────────────────
+    // ── Layer 1: Validate & print each tool ──────────────────────────────────
     const results: ToolResult[] = tools.map(tool => {
       const v = validateSchema(tool.inputSchema);
       return {
@@ -186,13 +523,13 @@ async function checkServer(url: string): Promise<void> {
       console.log();
     }
 
-    // ── Summary ───────────────────────────────────────────────────────────────
+    // ── Layer 1: Summary ─────────────────────────────────────────────────────
     divider();
     const passed = results.filter(r => r.passed).length;
     const failed = results.length - passed;
 
     console.log(
-      `\n  ${BOLD}Summary:${RESET} ${results.length} tool${results.length !== 1 ? 's' : ''} — ` +
+      `\n  ${BOLD}Layer 1 Summary:${RESET} ${results.length} tool${results.length !== 1 ? 's' : ''} — ` +
       `${GREEN}${passed} passed${RESET}, ` +
       `${failed > 0 ? RED : GREEN}${failed} failed${RESET}\n`
     );
@@ -200,6 +537,11 @@ async function checkServer(url: string): Promise<void> {
     console.log();
 
     if (failed > 0) process.exitCode = 1;
+
+    // ── Layer 2 (optional) ────────────────────────────────────────────────────
+    if (runAi && anthropic) {
+      await runLayer2Checks(tools as McpTool[], anthropic);
+    }
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -216,11 +558,12 @@ const program = new Command();
 
 program
   .name('mcp-checker')
-  .description('Inspect an MCP server: list tools and validate their JSON schemas')
+  .description('Inspect an MCP server: list tools, validate schemas, and run AI reasoning checks')
   .version('1.0.0')
   .argument('<url>', 'MCP server endpoint (Streamable HTTP transport)')
-  .action(async (url: string) => {
-    await checkServer(url);
+  .option('--ai', 'Run AI-powered Layer 2 reasoning checks (requires ANTHROPIC_API_KEY in .env)')
+  .action(async (url: string, options: { ai?: boolean }) => {
+    await checkServer(url, options.ai ?? false);
   });
 
 program.parseAsync(process.argv).catch(err => {
