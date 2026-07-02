@@ -209,6 +209,35 @@ const FixResponseSchema = z.object({
   suggestedDescription: z.string(),
 });
 
+// ─── Layer 2: Prompt rule blocks (shared across Check 1/2/4 prompts) ─────────
+
+const CLARITY_VERDICT_RULES = `Verdict rules:
+- Maximum 25 words, one sentence, no semicolons.
+- Never join two ideas with "and" — state the single most important problem.
+- State the problem directly. Never phrase it as a suggestion or hedge.
+- Never use these phrases: "could be clearer", "might benefit from", "it would be helpful if", "consider adding", "may cause confusion", "seems similar".
+
+BAD: "This description could be clearer and more specific about its purpose."
+BAD: "Might benefit from more detail about what it returns."
+GOOD: "Doesn't specify what format dates should be in — an agent may pass '2026-07-02' or 'July 2, 2026' inconsistently."
+GOOD: "Missing any mention of output format — an agent won't know if this returns JSON, markdown, or plain text."`;
+
+const CONFUSION_REASON_RULES = `Reason rules:
+- Maximum 30 words, one sentence.
+- Name the exact overlap: the specific words, parameter names, or phrases shared by both tools that make them look identical to an AI.
+- Never use these phrases: "seem similar", "could confuse", "overlapping", "might be confused".
+
+BAD: "These tools seem similar and could confuse an agent."
+BAD: "Both tools have overlapping functionality."
+GOOD: "Both take only repoName and both mention 'documentation' — an agent has no signal to distinguish topic-listing from content-retrieval."`;
+
+const SUGGESTED_FIX_RULES = `Rules:
+- Write a drop-in replacement description in active voice.
+- Maximum 2 sentences.
+- No hedging language. No meta-commentary about the description itself.
+
+GOOD: "Retrieves the full markdown content of a specific wiki page. Use this after read_wiki_structure to read a page's content — not to list available topics."`;
+
 // ─── Layer 2: AI helpers ──────────────────────────────────────────────────────
 
 function extractJSON(text: string): unknown {
@@ -254,13 +283,15 @@ async function check1Clarity(
     anthropic,
     'You are a tool quality evaluator for MCP servers. Respond only with valid JSON — no prose, no markdown.',
     `Evaluate the clarity of these MCP tools for an AI agent.
-For each tool, rate its clarity 1–10 and give a one-line verdict: would an AI reliably know when to use it and what arguments to pass?
+For each tool, rate its clarity 1–10 and write a one-sentence verdict identifying the specific problem — or, if the score is high, the specific reason it's clear.
+
+${CLARITY_VERDICT_RULES}
 
 Tools:
 ${toolsToPromptText(tools)}
 
 Respond with a JSON array in the same order as the input:
-[{"name":"<tool_name>","score":<1-10>,"verdict":"<one-line explanation>"}]`,
+[{"name":"<tool_name>","score":<1-10>,"verdict":"<one-sentence explanation>"}]`,
   );
   return ClarityResponseSchema.parse(extractJSON(text));
 }
@@ -276,11 +307,13 @@ async function check2Confusion(
     'You detect potential confusion between MCP tools. Respond only with valid JSON.',
     `Review these MCP tools and identify every pair whose descriptions are similar enough that an AI agent might pick the wrong one.
 
+${CONFUSION_REASON_RULES}
+
 Tools:
 ${toolsToPromptText(tools)}
 
 Respond with JSON:
-{"confusedPairs":[{"tool1":"<name>","tool2":"<name>","reason":"<brief explanation>"}]}
+{"confusedPairs":[{"tool1":"<name>","tool2":"<name>","reason":"<one-sentence explanation>"}]}
 
 If no pairs are confused, return {"confusedPairs":[]}`,
   );
@@ -368,7 +401,9 @@ Input schema: ${JSON.stringify(partner.inputSchema, null, 2)}
 
 Reason for confusion: ${confusionReason}
 
-Write a new description for "${tool.name}" ONLY. It must explicitly clarify how "${tool.name}" differs from "${partner.name}" so an AI agent can reliably pick the correct one. Keep it concise (1-3 sentences).
+Write a new description for "${tool.name}" ONLY. It must explicitly contrast with "${partner.name}" by name so an AI agent can reliably pick the correct one.
+
+${SUGGESTED_FIX_RULES}
 
 Respond with JSON: {"suggestedDescription":"<new description>"}`
     : `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem.
@@ -381,7 +416,9 @@ Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
 Clarity score: ${clarity.score}/10
 Clarity verdict: ${clarity.verdict}
 
-Write a new description that fixes the issue above so an AI agent reliably knows when to use this tool and what arguments to pass. Keep it concise (1-3 sentences).
+Write a new description that fixes the issue above so an AI agent reliably knows when to use this tool and what arguments to pass.
+
+${SUGGESTED_FIX_RULES}
 
 Respond with JSON: {"suggestedDescription":"<new description>"}`;
 
