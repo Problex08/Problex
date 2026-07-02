@@ -23,12 +23,12 @@ export default function Home() {
           <div className="inline-flex items-center justify-center w-14 h-14 bg-blue-600/20 border border-blue-500/30 rounded-2xl mb-5">
             <svg className="w-7 h-7 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
             </svg>
           </div>
           <h1 className="text-3xl font-bold text-slate-100 mb-2">MCP Server Checker</h1>
           <p className="text-slate-400 text-sm leading-relaxed">
-            Validate tool schemas and analyse AI agent usability
+            Paste your MCP server URL. Find out if an AI agent will actually use your tools correctly.
           </p>
         </div>
 
@@ -68,7 +68,7 @@ export default function Home() {
                 <span className="text-sm font-medium text-slate-300 group-hover:text-slate-100 transition-colors">
                   Include AI reasoning checks
                 </span>
-                <p className="text-xs text-slate-500 mt-0.5">Layer 2 · runs after Layer 1 · uses claude-haiku-4-5</p>
+                <p className="text-xs text-slate-500 mt-0.5">Runs after schema validation</p>
               </div>
             </label>
 
@@ -77,22 +77,13 @@ export default function Home() {
               className="w-full py-3 px-6 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white
                          font-semibold rounded-xl transition-colors"
             >
-              Check Server →
+              Run Free Check →
             </button>
           </form>
-        </div>
 
-        {/* What it checks */}
-        <div className="mt-6 grid grid-cols-2 gap-3">
-          {[
-            { label: 'Layer 1', sub: 'Schema validation', color: 'emerald' },
-            { label: 'Layer 2', sub: 'AI reasoning quality', color: 'blue' },
-          ].map(({ label, sub, color }) => (
-            <div key={label} className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
-              <div className={`text-xs font-semibold text-${color}-400 mb-1`}>{label}</div>
-              <div className="text-xs text-slate-400">{sub}</div>
-            </div>
-          ))}
+          <p className="mt-4 text-center text-xs text-slate-600">
+            No account required · Free to use · Works on any public MCP server
+          </p>
         </div>
       </div>
     </main>
