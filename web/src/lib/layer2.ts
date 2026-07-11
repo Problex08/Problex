@@ -1,8 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import type { ToolInfo, Layer2Report, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix } from './types';
+import type {
+  ToolInfo, Layer2Report, Layer2Verdict, ClarityResult, ConfusionPair,
+  SimulationResult, SuggestedFix, ScenarioFailureContext,
+} from './types';
 
 const CLARITY_FIX_THRESHOLD = 7;
+
+// Shape returned by Check 2 before simulation results are known to rank severity.
+type RawConfusionPair = Pick<ConfusionPair, 'tool1' | 'tool2' | 'reason'>;
 
 // ─── Zod schemas for Claude responses ────────────────────────────────────────
 
@@ -30,6 +36,11 @@ const ToolPickResponseSchema = z.object({
   arguments: z.record(z.string(), z.unknown()).optional(),
 });
 
+const ArgQualityResponseSchema = z.object({
+  valid: z.boolean(),
+  issue: z.string().optional(),
+});
+
 const FixResponseSchema = z.object({
   suggestedDescription: z.string(),
 });
@@ -55,6 +66,14 @@ const CONFUSION_REASON_RULES = `Reason rules:
 BAD: "These tools seem similar and could confuse an agent."
 BAD: "Both tools have overlapping functionality."
 GOOD: "Both take only repoName and both mention 'documentation' — an agent has no signal to distinguish topic-listing from content-retrieval."`;
+
+const ARG_QUALITY_RULES = `Issue rules (only when valid is false):
+- Maximum 20 words, one sentence.
+- Name the exact problem: which field, and whether it's a placeholder, a hallucinated value, a missing required field, or the wrong type/format.
+- Never use these phrases: "seems off", "might be wrong", "could be improved", "doesn't look right".
+
+GOOD: "repoName is 'example/repo' — a placeholder never mentioned in the user's request."
+GOOD: "Missing required field 'branch' — the schema requires it but no value was provided."`;
 
 const SUGGESTED_FIX_RULES = `Rules:
 - Write a drop-in replacement description in active voice.
@@ -99,7 +118,7 @@ async function callClaude(
   return block?.type === 'text' ? block.text : '';
 }
 
-// ─── Check 1: Description Clarity ────────────────────────────────────────────
+// ─── Check 1: Clarity Analysis ───────────────────────────────────────────────
 
 async function check1Clarity(tools: ToolInfo[], anthropic: Anthropic): Promise<ClarityResult[]> {
   const text = await callClaude(
@@ -119,9 +138,9 @@ Respond with a JSON array in the same order as the input:
   return ClarityResponseSchema.parse(extractJSON(text));
 }
 
-// ─── Check 2: Tool Confusion Detection ───────────────────────────────────────
+// ─── Check 2: Ambiguity Analysis ─────────────────────────────────────────────
 
-async function check2Confusion(tools: ToolInfo[], anthropic: Anthropic): Promise<ConfusionPair[]> {
+async function check2Confusion(tools: ToolInfo[], anthropic: Anthropic): Promise<RawConfusionPair[]> {
   const text = await callClaude(
     anthropic,
     'You detect potential confusion between MCP tools. Respond only with valid JSON.',
@@ -141,7 +160,36 @@ If no pairs are confused, return {"confusedPairs":[]}`,
   return parsed.confusedPairs;
 }
 
-// ─── Check 3: Scenario Simulation ────────────────────────────────────────────
+// Marks each confusion pair HIGH (a scenario failure actually confirmed the mix-up)
+// or LOW (flagged structurally, but no simulated failure landed on that pair).
+// HIGH pairs are sorted first so confirmed risk is what a reader sees immediately.
+function rankConfusionPairs(pairs: RawConfusionPair[], simulation: SimulationResult[]): ConfusionPair[] {
+  const ranked = pairs.map(pair => {
+    const failureIndex = simulation.findIndex(s =>
+      !s.correct && (
+        (s.expectedTool === pair.tool1 && s.pickedTool === pair.tool2) ||
+        (s.expectedTool === pair.tool2 && s.pickedTool === pair.tool1)
+      ),
+    );
+
+    if (failureIndex === -1) {
+      return { ...pair, severity: 'LOW' as const };
+    }
+    return {
+      ...pair,
+      severity:              'HIGH' as const,
+      confirmedByScenario:   failureIndex + 1,
+      confirmedByPickedTool: simulation[failureIndex].pickedTool,
+    };
+  });
+
+  return ranked.sort((a, b) => {
+    if (a.severity === b.severity) return 0;
+    return a.severity === 'HIGH' ? -1 : 1;
+  });
+}
+
+// ─── Check 3: Compatibility Testing ──────────────────────────────────────────
 
 // More tools (or more flagged confusion pairs) means more ways for an agent to
 // pick the wrong tool, so sample more scenarios to get reliable coverage.
@@ -151,11 +199,42 @@ function scenarioCount(toolCount: number, confusionPairCount: number): number {
   return 5;
 }
 
+async function checkArgQuality(
+  tool: ToolInfo,
+  request: string,
+  args: Record<string, unknown>,
+  anthropic: Anthropic,
+): Promise<{ valid: boolean; issue?: string }> {
+  const text = await callClaude(
+    anthropic,
+    'You evaluate whether tool-call arguments are usable, not whether the correct tool was chosen. Respond only with valid JSON.',
+    `Tool:
+Name: ${tool.name}
+Description: ${tool.description ?? '(no description)'}
+Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
+
+User request: "${request}"
+
+Arguments an agent proposed for this call:
+${JSON.stringify(args, null, 2)}
+
+Decide whether these arguments are valid: no placeholder text (e.g. "string", "TODO", "example", "<value>"), no hallucinated values that aren't grounded in the request, all required fields present, and no nonsensical values for their type or format.
+
+${ARG_QUALITY_RULES}
+
+Respond with JSON: {"valid":true} or {"valid":false,"issue":"<one-sentence reason>"}`,
+    256,
+    0,
+  );
+  return ArgQualityResponseSchema.parse(extractJSON(text));
+}
+
 async function check3Simulation(
   tools: ToolInfo[],
-  confusedPairs: ConfusionPair[],
+  confusedPairs: RawConfusionPair[],
   anthropic: Anthropic,
 ): Promise<SimulationResult[]> {
+  // Phase A: generate scenarios with expected tools
   const count = scenarioCount(tools.length, confusedPairs.length);
 
   const confusionBlock = confusedPairs.length > 0
@@ -176,6 +255,7 @@ Respond with a JSON array of exactly ${count} items:
   );
   const scenarios = ScenariosResponseSchema.parse(extractJSON(genText));
 
+  // Phase B: for each scenario, ask Claude to pick a tool independently.
   const toolMenu = tools
     .map(t => `• ${t.name}: ${t.description ?? '(no description)'}`)
     .join('\n');
@@ -193,7 +273,7 @@ Respond with a JSON array of exactly ${count} items:
     ),
   );
 
-  return scenarios.map((s, i) => {
+  const results: SimulationResult[] = scenarios.map((s, i) => {
     let pick: z.infer<typeof ToolPickResponseSchema>;
     try {
       pick = ToolPickResponseSchema.parse(extractJSON(picks[i]));
@@ -208,51 +288,77 @@ Respond with a JSON array of exactly ${count} items:
       correct:      pick.tool === s.expectedTool,
     };
   });
+
+  // Phase C: for scenarios where the right tool was picked, separately judge whether
+  // the arguments are actually usable — wrong-tool scenarios already fail regardless.
+  const toolByName = new Map(tools.map(t => [t.name, t]));
+
+  return Promise.all(results.map(async r => {
+    if (!r.correct) return r;
+    const tool = toolByName.get(r.expectedTool);
+    if (!tool) return r;
+
+    try {
+      const quality = await checkArgQuality(tool, r.request, r.pickedArgs, anthropic);
+      if (!quality.valid) {
+        return { ...r, argWarning: true, argIssue: quality.issue };
+      }
+    } catch { /* argument-quality check is best-effort; leave the pass as-is */ }
+    return r;
+  }));
 }
 
-// ─── Check 4: Suggested Fixes for low-clarity tools ──────────────────────────
+// ─── Check 4: Recommended fixes ──────────────────────────────────────────────
+// Generated for low-clarity tools AND for any tool that was the expected answer
+// in a failed scenario — a clear description on paper still needs to be picked
+// correctly against the tool's real competition.
 
 async function generateFix(
   tool: ToolInfo,
-  clarity: ClarityResult,
+  clarity: ClarityResult | undefined,
   partner: ToolInfo | undefined,
   confusionReason: string | undefined,
+  scenarioFailure: ScenarioFailureContext | undefined,
   anthropic: Anthropic,
 ): Promise<string> {
-  const prompt = partner
-    ? `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem and to eliminate confusion with a similar tool.
+  const context: string[] = [];
+
+  if (clarity) {
+    context.push(`Clarity score: ${clarity.score}/10\nClarity verdict: ${clarity.verdict}`);
+  }
+
+  if (scenarioFailure) {
+    context.push(
+      `This tool was the correct answer to a real test request, but an agent picked a different tool instead:\n` +
+      `Request: "${scenarioFailure.request}"\n` +
+      `Tool picked instead: ${scenarioFailure.pickedTool}`,
+    );
+  }
+
+  if (partner) {
+    context.push(
+      `Tool it gets confused with:\n` +
+      `Name: ${partner.name}\n` +
+      `Description: ${partner.description ?? '(no description)'}\n` +
+      `Input schema: ${JSON.stringify(partner.inputSchema, null, 2)}\n\n` +
+      `Reason for confusion: ${confusionReason}`,
+    );
+  }
+
+  const contrastInstruction = partner
+    ? `Write a new description for "${tool.name}" ONLY. It must explicitly contrast with "${partner.name}" by name so an AI agent can reliably pick the correct one.`
+    : `Write a new description that fixes the issue above so an AI agent reliably knows when to use this tool and what arguments to pass.`;
+
+  const prompt = `Rewrite the description of the MCP tool "${tool.name}" so an AI agent picks it correctly and calls it with the right arguments.
 
 Tool to fix:
 Name: ${tool.name}
 Description: ${tool.description ?? '(no description)'}
 Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
 
-Clarity score: ${clarity.score}/10
-Clarity verdict: ${clarity.verdict}
+${context.join('\n\n')}
 
-Tool it gets confused with:
-Name: ${partner.name}
-Description: ${partner.description ?? '(no description)'}
-Input schema: ${JSON.stringify(partner.inputSchema, null, 2)}
-
-Reason for confusion: ${confusionReason}
-
-Write a new description for "${tool.name}" ONLY. It must explicitly contrast with "${partner.name}" by name so an AI agent can reliably pick the correct one.
-
-${SUGGESTED_FIX_RULES}
-
-Respond with JSON: {"suggestedDescription":"<new description>"}`
-    : `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem.
-
-Tool to fix:
-Name: ${tool.name}
-Description: ${tool.description ?? '(no description)'}
-Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
-
-Clarity score: ${clarity.score}/10
-Clarity verdict: ${clarity.verdict}
-
-Write a new description that fixes the issue above so an AI agent reliably knows when to use this tool and what arguments to pass.
+${contrastInstruction}
 
 ${SUGGESTED_FIX_RULES}
 
@@ -260,7 +366,7 @@ Respond with JSON: {"suggestedDescription":"<new description>"}`;
 
   const text = await callClaude(
     anthropic,
-    'You rewrite MCP tool descriptions to make them clearer for AI agents. Respond only with valid JSON — no prose, no markdown.',
+    'You rewrite MCP tool descriptions to make them clearer and less ambiguous for AI agents. Respond only with valid JSON — no prose, no markdown.',
     prompt,
     512,
   );
@@ -271,30 +377,83 @@ async function check4SuggestedFixes(
   tools: ToolInfo[],
   clarity: ClarityResult[],
   confusedPairs: ConfusionPair[],
+  simulation: SimulationResult[],
   anthropic: Anthropic,
 ): Promise<SuggestedFix[]> {
-  const lowScoring = clarity.filter(c => Math.round(c.score) < CLARITY_FIX_THRESHOLD);
-  if (lowScoring.length === 0) return [];
-
   const toolByName = new Map(tools.map(t => [t.name, t]));
+  const clarityByName = new Map(clarity.map(c => [c.name, c]));
+  const lowClarityNames = new Set(
+    clarity.filter(c => Math.round(c.score) < CLARITY_FIX_THRESHOLD).map(c => c.name),
+  );
 
-  const fixes = await Promise.all(lowScoring.map(async c => {
-    const tool = toolByName.get(c.name);
+  const scenarioFailureByTool = new Map<string, ScenarioFailureContext>();
+  simulation.forEach((s, i) => {
+    if (!s.correct && !scenarioFailureByTool.has(s.expectedTool)) {
+      scenarioFailureByTool.set(s.expectedTool, {
+        scenarioIndex: i + 1,
+        request:       s.request,
+        pickedTool:    s.pickedTool,
+      });
+    }
+  });
+
+  const namesNeedingFix = new Set<string>([...lowClarityNames, ...scenarioFailureByTool.keys()]);
+  if (namesNeedingFix.size === 0) return [];
+
+  const fixes = await Promise.all(Array.from(namesNeedingFix).map(async (name): Promise<SuggestedFix | null> => {
+    const tool = toolByName.get(name);
     if (!tool) return null;
 
-    const pair = confusedPairs.find(p => p.tool1 === c.name || p.tool2 === c.name);
-    const partnerName = pair ? (pair.tool1 === c.name ? pair.tool2 : pair.tool1) : undefined;
-    const partner = partnerName ? toolByName.get(partnerName) : undefined;
+    const clarityResult    = clarityByName.get(name);
+    const scenarioFailure  = scenarioFailureByTool.get(name);
+    const pair             = confusedPairs.find(p => p.tool1 === name || p.tool2 === name);
+    const partnerName      = pair ? (pair.tool1 === name ? pair.tool2 : pair.tool1) : undefined;
+    const partner          = partnerName ? toolByName.get(partnerName) : undefined;
 
-    const suggestedDescription = await generateFix(tool, c, partner, pair?.reason, anthropic);
+    const suggestedDescription = await generateFix(
+      tool, clarityResult, partner, pair?.reason, scenarioFailure, anthropic,
+    );
+
+    const reasons: Array<'clarity' | 'scenario'> = [];
+    if (lowClarityNames.has(name)) reasons.push('clarity');
+    if (scenarioFailure) reasons.push('scenario');
+
     return {
-      name:                  c.name,
-      originalDescription:   tool.description ?? '(no description)',
+      name,
+      originalDescription:  tool.description ?? '(no description)',
       suggestedDescription,
+      reasons,
+      ...(scenarioFailure ? { scenarioContext: scenarioFailure } : {}),
     };
   }));
 
   return fixes.filter((f): f is SuggestedFix => f !== null);
+}
+
+// ─── Overall verdict ──────────────────────────────────────────────────────────
+
+function computeVerdict(
+  tools: ToolInfo[],
+  simulation: SimulationResult[],
+  suggestedFixes: SuggestedFix[],
+): Layer2Verdict {
+  const totalTools = tools.length;
+  const scenariosFailed = simulation.filter(s => !s.correct).length;
+
+  const toolsWithIssues = new Set<string>([
+    ...suggestedFixes.map(f => f.name),
+    ...simulation.filter(s => s.argWarning).map(s => s.expectedTool),
+  ]);
+
+  const issuesCount = suggestedFixes.length + simulation.filter(s => s.argWarning).length;
+
+  return {
+    readyTools: totalTools - toolsWithIssues.size,
+    totalTools,
+    scenariosFailed,
+    issuesCount,
+    shipReady: issuesCount === 0 && scenariosFailed === 0,
+  };
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -302,17 +461,19 @@ async function check4SuggestedFixes(
 export async function runLayer2(tools: ToolInfo[], apiKey: string): Promise<Layer2Report> {
   const anthropic = new Anthropic({ apiKey });
 
-  // Clarity + Confusion run in parallel (each is one Claude call)
-  const [clarity, confusedPairs] = await Promise.all([
+  // Clarity + Confusion run in parallel (each is one Claude call).
+  const [clarity, confusedPairsRaw] = await Promise.all([
     check1Clarity(tools, anthropic),
     check2Confusion(tools, anthropic),
   ]);
 
-  // Simulation + suggested fixes each depend only on the results above, so run in parallel.
-  const [simulation, suggestedFixes] = await Promise.all([
-    check3Simulation(tools, confusedPairs, anthropic),
-    check4SuggestedFixes(tools, clarity, confusedPairs, anthropic),
-  ]);
+  // Simulation must finish before we can rank confusion pairs or generate fixes for
+  // scenario failures — both depend on knowing which scenarios actually failed.
+  const simulation = await check3Simulation(tools, confusedPairsRaw, anthropic);
+
+  const confusedPairs = rankConfusionPairs(confusedPairsRaw, simulation);
+  const suggestedFixes = await check4SuggestedFixes(tools, clarity, confusedPairs, simulation, anthropic);
+  const verdict = computeVerdict(tools, simulation, suggestedFixes);
 
   return {
     clarity,
@@ -320,5 +481,6 @@ export async function runLayer2(tools: ToolInfo[], apiKey: string): Promise<Laye
     simulation,
     simulationScore: simulation.filter(s => s.correct).length,
     suggestedFixes,
+    verdict,
   };
 }

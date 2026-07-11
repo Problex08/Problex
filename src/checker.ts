@@ -112,10 +112,16 @@ interface ClarityResult {
 }
 
 interface ConfusionPair {
-  tool1:  string;
-  tool2:  string;
-  reason: string;
+  tool1:                  string;
+  tool2:                  string;
+  reason:                 string;
+  severity:               'HIGH' | 'LOW';
+  confirmedByScenario?:   number; // 1-based index into the simulation results
+  confirmedByPickedTool?: string; // tool actually picked in that scenario
 }
+
+// Shape returned by Check 2 before simulation results are known to rank severity.
+type RawConfusionPair = Pick<ConfusionPair, 'tool1' | 'tool2' | 'reason'>;
 
 interface SimulationResult {
   request:      string;
@@ -123,12 +129,30 @@ interface SimulationResult {
   pickedTool:   string;
   pickedArgs:   Record<string, unknown>;
   correct:      boolean;
+  argWarning?:  boolean; // right tool picked, but arguments look wrong
+  argIssue?:    string;  // one-line reason when argWarning is true
+}
+
+interface ScenarioFailureContext {
+  scenarioIndex: number; // 1-based index into the simulation results
+  request:       string;
+  pickedTool:    string;
 }
 
 interface SuggestedFix {
   name:                  string;
   originalDescription:   string;
   suggestedDescription:  string;
+  reasons:               Array<'clarity' | 'scenario'>;
+  scenarioContext?:      ScenarioFailureContext;
+}
+
+interface Layer2Verdict {
+  readyTools:      number;
+  totalTools:      number;
+  scenariosFailed: number;
+  issuesCount:     number;
+  shipReady:       boolean;
 }
 
 const CLARITY_FIX_THRESHOLD = 7;
@@ -205,6 +229,11 @@ const ToolPickResponseSchema = z.object({
   arguments: z.record(z.string(), z.unknown()).optional(),
 });
 
+const ArgQualityResponseSchema = z.object({
+  valid: z.boolean(),
+  issue: z.string().optional(),
+});
+
 const FixResponseSchema = z.object({
   suggestedDescription: z.string(),
 });
@@ -230,6 +259,14 @@ const CONFUSION_REASON_RULES = `Reason rules:
 BAD: "These tools seem similar and could confuse an agent."
 BAD: "Both tools have overlapping functionality."
 GOOD: "Both take only repoName and both mention 'documentation' — an agent has no signal to distinguish topic-listing from content-retrieval."`;
+
+const ARG_QUALITY_RULES = `Issue rules (only when valid is false):
+- Maximum 20 words, one sentence.
+- Name the exact problem: which field, and whether it's a placeholder, a hallucinated value, a missing required field, or the wrong type/format.
+- Never use these phrases: "seems off", "might be wrong", "could be improved", "doesn't look right".
+
+GOOD: "repoName is 'example/repo' — a placeholder never mentioned in the user's request."
+GOOD: "Missing required field 'branch' — the schema requires it but no value was provided."`;
 
 const SUGGESTED_FIX_RULES = `Rules:
 - Write a drop-in replacement description in active voice.
@@ -303,7 +340,7 @@ Respond with a JSON array in the same order as the input:
 async function check2Confusion(
   tools: McpTool[],
   anthropic: Anthropic,
-): Promise<ConfusionPair[]> {
+): Promise<RawConfusionPair[]> {
   const text = await callClaude(
     anthropic,
     'You detect potential confusion between MCP tools. Respond only with valid JSON.',
@@ -323,7 +360,36 @@ If no pairs are confused, return {"confusedPairs":[]}`,
   return parsed.confusedPairs;
 }
 
-// ─── Layer 2: Check 3 — Scenario Simulation ──────────────────────────────────
+// Marks each confusion pair HIGH (a scenario failure actually confirmed the mix-up)
+// or LOW (flagged structurally, but no simulated failure landed on that pair).
+// HIGH pairs are sorted first so confirmed risk is what a reader sees immediately.
+function rankConfusionPairs(pairs: RawConfusionPair[], simulation: SimulationResult[]): ConfusionPair[] {
+  const ranked = pairs.map(pair => {
+    const failureIndex = simulation.findIndex(s =>
+      !s.correct && (
+        (s.expectedTool === pair.tool1 && s.pickedTool === pair.tool2) ||
+        (s.expectedTool === pair.tool2 && s.pickedTool === pair.tool1)
+      ),
+    );
+
+    if (failureIndex === -1) {
+      return { ...pair, severity: 'LOW' as const };
+    }
+    return {
+      ...pair,
+      severity:              'HIGH' as const,
+      confirmedByScenario:   failureIndex + 1,
+      confirmedByPickedTool: simulation[failureIndex].pickedTool,
+    };
+  });
+
+  return ranked.sort((a, b) => {
+    if (a.severity === b.severity) return 0;
+    return a.severity === 'HIGH' ? -1 : 1;
+  });
+}
+
+// ─── Layer 2: Check 3 — Compatibility Testing ────────────────────────────────
 
 // More tools (or more flagged confusion pairs) means more ways for an agent to
 // pick the wrong tool, so sample more scenarios to get reliable coverage.
@@ -333,9 +399,39 @@ function scenarioCount(toolCount: number, confusionPairCount: number): number {
   return 5;
 }
 
+async function checkArgQuality(
+  tool: McpTool,
+  request: string,
+  args: Record<string, unknown>,
+  anthropic: Anthropic,
+): Promise<{ valid: boolean; issue?: string }> {
+  const text = await callClaude(
+    anthropic,
+    'You evaluate whether tool-call arguments are usable, not whether the correct tool was chosen. Respond only with valid JSON.',
+    `Tool:
+Name: ${tool.name}
+Description: ${tool.description ?? '(no description)'}
+Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
+
+User request: "${request}"
+
+Arguments an agent proposed for this call:
+${JSON.stringify(args, null, 2)}
+
+Decide whether these arguments are valid: no placeholder text (e.g. "string", "TODO", "example", "<value>"), no hallucinated values that aren't grounded in the request, all required fields present, and no nonsensical values for their type or format.
+
+${ARG_QUALITY_RULES}
+
+Respond with JSON: {"valid":true} or {"valid":false,"issue":"<one-sentence reason>"}`,
+    256,
+    0,
+  );
+  return ArgQualityResponseSchema.parse(extractJSON(text));
+}
+
 async function check3Simulation(
   tools: McpTool[],
-  confusedPairs: ConfusionPair[],
+  confusedPairs: RawConfusionPair[],
   anthropic: Anthropic,
 ): Promise<SimulationResult[]> {
   // Phase A: generate scenarios with expected tools
@@ -376,7 +472,7 @@ Respond with a JSON array of exactly ${count} items:
     ),
   ));
 
-  return scenarios.map((s, i) => {
+  const results: SimulationResult[] = scenarios.map((s, i) => {
     let pick: z.infer<typeof ToolPickResponseSchema>;
     try {
       pick = ToolPickResponseSchema.parse(extractJSON(picks[i]));
@@ -391,51 +487,74 @@ Respond with a JSON array of exactly ${count} items:
       correct:      pick.tool === s.expectedTool,
     };
   });
+
+  // Phase C: for scenarios where the right tool was picked, separately judge whether
+  // the arguments are actually usable — wrong-tool scenarios already fail regardless.
+  const toolByName = new Map(tools.map(t => [t.name, t]));
+
+  return Promise.all(results.map(async r => {
+    if (!r.correct) return r;
+    const tool = toolByName.get(r.expectedTool);
+    if (!tool) return r;
+
+    try {
+      const quality = await checkArgQuality(tool, r.request, r.pickedArgs, anthropic);
+      if (!quality.valid) {
+        return { ...r, argWarning: true, argIssue: quality.issue };
+      }
+    } catch { /* argument-quality check is best-effort; leave the pass as-is */ }
+    return r;
+  }));
 }
 
 // ─── Layer 2: Check 4 — Suggested Fixes for low-clarity tools ────────────────
 
 async function generateFix(
   tool: McpTool,
-  clarity: ClarityResult,
+  clarity: ClarityResult | undefined,
   partner: McpTool | undefined,
   confusionReason: string | undefined,
+  scenarioFailure: ScenarioFailureContext | undefined,
   anthropic: Anthropic,
 ): Promise<string> {
-  const prompt = partner
-    ? `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem and to eliminate confusion with a similar tool.
+  const context: string[] = [];
+
+  if (clarity) {
+    context.push(`Clarity score: ${clarity.score}/10\nClarity verdict: ${clarity.verdict}`);
+  }
+
+  if (scenarioFailure) {
+    context.push(
+      `This tool was the correct answer to a real test request, but an agent picked a different tool instead:\n` +
+      `Request: "${scenarioFailure.request}"\n` +
+      `Tool picked instead: ${scenarioFailure.pickedTool}`,
+    );
+  }
+
+  if (partner) {
+    context.push(
+      `Tool it gets confused with:\n` +
+      `Name: ${partner.name}\n` +
+      `Description: ${partner.description ?? '(no description)'}\n` +
+      `Input schema: ${JSON.stringify(partner.inputSchema, null, 2)}\n\n` +
+      `Reason for confusion: ${confusionReason}`,
+    );
+  }
+
+  const contrastInstruction = partner
+    ? `Write a new description for "${tool.name}" ONLY. It must explicitly contrast with "${partner.name}" by name so an AI agent can reliably pick the correct one.`
+    : `Write a new description that fixes the issue above so an AI agent reliably knows when to use this tool and what arguments to pass.`;
+
+  const prompt = `Rewrite the description of the MCP tool "${tool.name}" so an AI agent picks it correctly and calls it with the right arguments.
 
 Tool to fix:
 Name: ${tool.name}
 Description: ${tool.description ?? '(no description)'}
 Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
 
-Clarity score: ${clarity.score}/10
-Clarity verdict: ${clarity.verdict}
+${context.join('\n\n')}
 
-Tool it gets confused with:
-Name: ${partner.name}
-Description: ${partner.description ?? '(no description)'}
-Input schema: ${JSON.stringify(partner.inputSchema, null, 2)}
-
-Reason for confusion: ${confusionReason}
-
-Write a new description for "${tool.name}" ONLY. It must explicitly contrast with "${partner.name}" by name so an AI agent can reliably pick the correct one.
-
-${SUGGESTED_FIX_RULES}
-
-Respond with JSON: {"suggestedDescription":"<new description>"}`
-    : `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem.
-
-Tool to fix:
-Name: ${tool.name}
-Description: ${tool.description ?? '(no description)'}
-Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
-
-Clarity score: ${clarity.score}/10
-Clarity verdict: ${clarity.verdict}
-
-Write a new description that fixes the issue above so an AI agent reliably knows when to use this tool and what arguments to pass.
+${contrastInstruction}
 
 ${SUGGESTED_FIX_RULES}
 
@@ -443,41 +562,95 @@ Respond with JSON: {"suggestedDescription":"<new description>"}`;
 
   const text = await callClaude(
     anthropic,
-    'You rewrite MCP tool descriptions to make them clearer for AI agents. Respond only with valid JSON — no prose, no markdown.',
+    'You rewrite MCP tool descriptions to make them clearer and less ambiguous for AI agents. Respond only with valid JSON — no prose, no markdown.',
     prompt,
     512,
   );
   return FixResponseSchema.parse(extractJSON(text)).suggestedDescription;
 }
 
+// Generated for low-clarity tools AND for any tool that was the expected answer in a
+// failed scenario — a clear description on paper still needs to be picked correctly
+// against the tool's real competition.
 async function check4SuggestedFixes(
   tools: McpTool[],
   clarity: ClarityResult[],
   confusedPairs: ConfusionPair[],
+  simulation: SimulationResult[],
   anthropic: Anthropic,
 ): Promise<SuggestedFix[]> {
-  const lowScoring = clarity.filter(c => Math.round(c.score) < CLARITY_FIX_THRESHOLD);
-  if (lowScoring.length === 0) return [];
-
   const toolByName = new Map(tools.map(t => [t.name, t]));
+  const clarityByName = new Map(clarity.map(c => [c.name, c]));
+  const lowClarityNames = new Set(
+    clarity.filter(c => Math.round(c.score) < CLARITY_FIX_THRESHOLD).map(c => c.name),
+  );
 
-  const fixes = await Promise.all(lowScoring.map(async c => {
-    const tool = toolByName.get(c.name);
+  const scenarioFailureByTool = new Map<string, ScenarioFailureContext>();
+  simulation.forEach((s, i) => {
+    if (!s.correct && !scenarioFailureByTool.has(s.expectedTool)) {
+      scenarioFailureByTool.set(s.expectedTool, {
+        scenarioIndex: i + 1,
+        request:       s.request,
+        pickedTool:    s.pickedTool,
+      });
+    }
+  });
+
+  const namesNeedingFix = new Set<string>([...lowClarityNames, ...scenarioFailureByTool.keys()]);
+  if (namesNeedingFix.size === 0) return [];
+
+  const fixes = await Promise.all(Array.from(namesNeedingFix).map(async (name): Promise<SuggestedFix | null> => {
+    const tool = toolByName.get(name);
     if (!tool) return null;
 
-    const pair = confusedPairs.find(p => p.tool1 === c.name || p.tool2 === c.name);
-    const partnerName = pair ? (pair.tool1 === c.name ? pair.tool2 : pair.tool1) : undefined;
-    const partner = partnerName ? toolByName.get(partnerName) : undefined;
+    const clarityResult   = clarityByName.get(name);
+    const scenarioFailure = scenarioFailureByTool.get(name);
+    const pair            = confusedPairs.find(p => p.tool1 === name || p.tool2 === name);
+    const partnerName     = pair ? (pair.tool1 === name ? pair.tool2 : pair.tool1) : undefined;
+    const partner          = partnerName ? toolByName.get(partnerName) : undefined;
 
-    const suggestedDescription = await generateFix(tool, c, partner, pair?.reason, anthropic);
+    const suggestedDescription = await generateFix(
+      tool, clarityResult, partner, pair?.reason, scenarioFailure, anthropic,
+    );
+
+    const reasons: Array<'clarity' | 'scenario'> = [];
+    if (lowClarityNames.has(name)) reasons.push('clarity');
+    if (scenarioFailure) reasons.push('scenario');
+
     return {
-      name:                  c.name,
-      originalDescription:   tool.description ?? '(no description)',
+      name,
+      originalDescription: tool.description ?? '(no description)',
       suggestedDescription,
+      reasons,
+      ...(scenarioFailure ? { scenarioContext: scenarioFailure } : {}),
     };
   }));
 
   return fixes.filter((f): f is SuggestedFix => f !== null);
+}
+
+function computeVerdict(
+  tools: McpTool[],
+  simulation: SimulationResult[],
+  suggestedFixes: SuggestedFix[],
+): Layer2Verdict {
+  const totalTools = tools.length;
+  const scenariosFailed = simulation.filter(s => !s.correct).length;
+
+  const toolsWithIssues = new Set<string>([
+    ...suggestedFixes.map(f => f.name),
+    ...simulation.filter(s => s.argWarning).map(s => s.expectedTool),
+  ]);
+
+  const issuesCount = suggestedFixes.length + simulation.filter(s => s.argWarning).length;
+
+  return {
+    readyTools: totalTools - toolsWithIssues.size,
+    totalTools,
+    scenariosFailed,
+    issuesCount,
+    shipReady: issuesCount === 0 && scenariosFailed === 0,
+  };
 }
 
 // ─── Layer 2: orchestrator ────────────────────────────────────────────────────
@@ -488,37 +661,68 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
   console.log(`${BOLD}  Layer 2 — Behavior Validation${RESET}  ${DIM}(claude-haiku-4-5)${RESET}`);
   divider('═');
 
-  // Clarity and confusion are computed together (before either is printed) so that
-  // suggested fixes for low-clarity tools can reference their confusion pair, if any.
+  // Clarity and confusion are computed together first (before anything is printed).
   let clarityResults: ClarityResult[] | undefined;
   let clarityErr: string | undefined;
-  let confusedPairs: ConfusionPair[] = [];
+  let confusedPairsRaw: RawConfusionPair[] = [];
   let confusionErr: string | undefined;
 
   const runConfusion = tools.length >= 2;
 
-  step('Analysing clarity + confusion');
+  step('Analysing clarity + ambiguity');
   const [clarityOutcome, confusionOutcome] = await Promise.allSettled([
     check1Clarity(tools, anthropic),
-    runConfusion ? check2Confusion(tools, anthropic) : Promise.resolve([] as ConfusionPair[]),
+    runConfusion ? check2Confusion(tools, anthropic) : Promise.resolve([] as RawConfusionPair[]),
   ]);
 
   if (clarityOutcome.status === 'fulfilled') clarityResults = clarityOutcome.value;
   else clarityErr = clarityOutcome.reason instanceof Error ? clarityOutcome.reason.message : String(clarityOutcome.reason);
 
-  if (confusionOutcome.status === 'fulfilled') confusedPairs = confusionOutcome.value;
+  if (confusionOutcome.status === 'fulfilled') confusedPairsRaw = confusionOutcome.value;
   else confusionErr = confusionOutcome.reason instanceof Error ? confusionOutcome.reason.message : String(confusionOutcome.reason);
+  stepDoneCustom('Analysing clarity + ambiguity… ', `${GREEN}done${RESET}`);
+
+  // Compatibility testing must finish before we can rank confusion pairs or generate
+  // fixes for scenario failures — both depend on knowing which scenarios failed.
+  let sims: SimulationResult[] = [];
+  let simErr: string | undefined;
+  const simCount = scenarioCount(tools.length, confusedPairsRaw.length);
+  step(`Running compatibility tests (${simCount} scenarios)`);
+  try {
+    sims = await check3Simulation(tools, confusedPairsRaw, anthropic);
+  } catch (err) {
+    simErr = err instanceof Error ? err.message : String(err);
+  }
+  stepDoneCustom('Running compatibility tests… ', `${GREEN}done${RESET}`);
+
+  const confusedPairs = rankConfusionPairs(confusedPairsRaw, sims);
 
   let fixes: SuggestedFix[] = [];
   if (clarityResults) {
     try {
-      fixes = await check4SuggestedFixes(tools, clarityResults, confusedPairs, anthropic);
+      fixes = await check4SuggestedFixes(tools, clarityResults, confusedPairs, sims, anthropic);
     } catch { /* suggested fixes are best-effort; ignore failures */ }
   }
   const fixByName = new Map(fixes.map(f => [f.name, f]));
-  stepDoneCustom('Analysing clarity + confusion… ', `${GREEN}done${RESET}`);
 
-  // ── Check 1: Description Clarity ─────────────────────────────────────────
+  const verdict = computeVerdict(tools, sims, fixes);
+
+  // ── Overall verdict ───────────────────────────────────────────────────────
+  console.log();
+  if (verdict.shipReady) {
+    console.log(`  ${GREEN}${BOLD}✓ Server ready to ship${RESET}\n`);
+  } else {
+    const issueWord = verdict.issuesCount === 1 ? 'issue' : 'issues';
+    const scenarioWord = verdict.scenariosFailed === 1 ? 'scenario' : 'scenarios';
+    console.log(`  ${YELLOW}${BOLD}${verdict.issuesCount} ${issueWord} found before shipping${RESET}`);
+    console.log(
+      `  ${DIM}${verdict.readyTools}/${verdict.totalTools} tools ready to ship · ` +
+      `${verdict.scenariosFailed} ${scenarioWord} failed · ` +
+      `${verdict.issuesCount} ${issueWord} need fixing${RESET}\n`,
+    );
+  }
+
+  // ── Check 1: Clarity Analysis ─────────────────────────────────────────────
   console.log(`\n  ${BOLD}CHECK 1 · CLARITY ANALYSIS${RESET}\n`);
   divider();
   console.log();
@@ -535,12 +739,18 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
       const fix = fixByName.get(r.name);
       if (fix) {
         console.log(`       ${GREEN}Recommended fix:${RESET} ${fix.suggestedDescription}`);
+        if (fix.scenarioContext) {
+          console.log(
+            `       ${DIM}Triggered by Scenario ${fix.scenarioContext.scenarioIndex} — ` +
+            `agent picked ${fix.scenarioContext.pickedTool} instead of this tool.${RESET}`,
+          );
+        }
       }
       console.log();
     }
   }
 
-  // ── Check 2: Tool Confusion Detection ────────────────────────────────────
+  // ── Check 2: Ambiguity Analysis ───────────────────────────────────────────
   divider();
   console.log(`\n  ${BOLD}CHECK 2 · AMBIGUITY ANALYSIS${RESET}\n`);
   divider();
@@ -554,27 +764,37 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
     console.log(`  ${GREEN}✓ No confused tool pairs detected.${RESET}\n`);
   } else {
     for (const p of confusedPairs) {
-      console.log(`  ${YELLOW}⚠ ${BOLD}${p.tool1}${RESET}${YELLOW} ↔ ${BOLD}${p.tool2}${RESET}`);
-      console.log(`    ${p.reason}\n`);
+      const isHigh = p.severity === 'HIGH';
+      const color  = isHigh ? RED : YELLOW;
+      const badge  = isHigh
+        ? `  ${RED}${BOLD}[HIGH — confirmed by simulation]${RESET}`
+        : `  ${DIM}[LOW — not confirmed]${RESET}`;
+
+      console.log(`  ${color}⚠ ${BOLD}${p.tool1}${RESET}${color} ↔ ${BOLD}${p.tool2}${RESET}${badge}`);
+      console.log(`    ${p.reason}`);
+      if (isHigh && p.confirmedByScenario) {
+        console.log(`    ${RED}Confirmed by Scenario ${p.confirmedByScenario} — agent picked ${p.confirmedByPickedTool} instead.${RESET}`);
+      }
+      console.log();
     }
   }
 
-  // ── Check 3: Scenario Simulation ─────────────────────────────────────────
+  // ── Check 3: Compatibility Testing ────────────────────────────────────────
   divider();
   console.log(`\n  ${BOLD}CHECK 3 · COMPATIBILITY TESTING${RESET}\n`);
   divider();
   console.log();
 
-  try {
-    const simCount = scenarioCount(tools.length, confusedPairs.length);
-    step(`Running scenario simulation (${simCount} tests)`);
-    const sims = await check3Simulation(tools, confusedPairs, anthropic);
-    stepDoneCustom('Running scenario simulation… ', `${GREEN}done${RESET}`);
-    console.log();
-
+  if (simErr) {
+    console.log(`  ${RED}Check 3 failed: ${simErr}${RESET}\n`);
+  } else {
     for (let i = 0; i < sims.length; i++) {
-      const s     = sims[i];
-      const badge = s.correct ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
+      const s = sims[i];
+      const badge = !s.correct
+        ? `${RED}✗${RESET}`
+        : s.argWarning
+          ? `${YELLOW}⚠ PASS (wrong args)${RESET}`
+          : `${GREEN}✓${RESET}`;
       const argsStr = Object.keys(s.pickedArgs).length > 0
         ? JSON.stringify(s.pickedArgs)
         : '{}';
@@ -582,6 +802,9 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
       console.log(`  ${DIM}Scenario ${i + 1}:${RESET} "${truncate(s.request, 78)}"`);
       console.log(`    Expected: ${BOLD}${s.expectedTool}${RESET}  →  Picked: ${BOLD}${s.pickedTool}${RESET}  ${badge}`);
       console.log(`    Args:     ${DIM}${truncate(argsStr, 80)}${RESET}`);
+      if (s.argWarning && s.argIssue) {
+        console.log(`    ${YELLOW}${s.argIssue}${RESET}`);
+      }
       console.log();
     }
 
@@ -589,8 +812,6 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
     const total   = sims.length;
     const scoreColor = correct === total ? GREEN : correct >= Math.ceil(total / 2) ? YELLOW : RED;
     console.log(`  ${BOLD}Score: ${scoreColor}${correct}/${total} passed${RESET}\n`);
-  } catch (err) {
-    console.log(`\r  ${RED}Check 3 failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
   }
 
   divider('═');

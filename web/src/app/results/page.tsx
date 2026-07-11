@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { Layer1Report, Layer2Report, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix } from '@/lib/types';
+import type { Layer1Report, Layer2Report, Layer2Verdict, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix } from '@/lib/types';
 
 // ─── Small shared atoms ───────────────────────────────────────────────────────
 
@@ -198,6 +198,12 @@ function SuggestedFixBox({ fix }: { fix: SuggestedFix }) {
         </button>
       </div>
       <p className="text-xs text-emerald-200/90 leading-relaxed">{fix.suggestedDescription}</p>
+      {fix.scenarioContext && (
+        <p className="text-xs text-emerald-400/70 leading-relaxed mt-1.5">
+          Triggered by Scenario {fix.scenarioContext.scenarioIndex} — agent picked{' '}
+          {fix.scenarioContext.pickedTool} instead of this tool.
+        </p>
+      )}
     </div>
   );
 }
@@ -218,16 +224,45 @@ function ClarityRow({ result, fix }: { result: ClarityResult; fix?: SuggestedFix
 }
 
 function ConfusionRow({ pair }: { pair: ConfusionPair }) {
+  const isHigh = pair.severity === 'HIGH';
   return (
-    <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3">
-      <div className="flex items-center gap-2 mb-1.5 text-sm font-mono">
-        <span className="text-amber-300 font-semibold">{pair.tool1}</span>
+    <div className={`rounded-xl p-3 border ${
+      isHigh ? 'bg-red-500/5 border-red-500/20' : 'bg-amber-500/5 border-amber-500/20'
+    }`}>
+      <div className="flex items-center gap-2 mb-1.5 text-sm font-mono flex-wrap">
+        <span className={`font-semibold ${isHigh ? 'text-red-300' : 'text-amber-300'}`}>{pair.tool1}</span>
         <span className="text-slate-500">↔</span>
-        <span className="text-amber-300 font-semibold">{pair.tool2}</span>
+        <span className={`font-semibold ${isHigh ? 'text-red-300' : 'text-amber-300'}`}>{pair.tool2}</span>
+        {isHigh && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300
+                           font-sans font-semibold uppercase tracking-wide whitespace-nowrap">
+            Confirmed by simulation
+          </span>
+        )}
       </div>
       <p className="text-xs text-slate-400 leading-relaxed">{pair.reason}</p>
+      {isHigh && pair.confirmedByScenario && (
+        <p className="text-xs text-red-300/80 leading-relaxed mt-1">
+          Confirmed by Scenario {pair.confirmedByScenario} — agent picked {pair.confirmedByPickedTool} instead.
+        </p>
+      )}
     </div>
   );
+}
+
+function SimStatusBadge({ sim }: { sim: SimulationResult }) {
+  if (!sim.correct) {
+    return <span className="text-red-400 text-base leading-none">✗</span>;
+  }
+  if (sim.argWarning) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold
+                       bg-amber-500/10 text-amber-400 border border-amber-500/30 whitespace-nowrap">
+        ⚠ PASS (wrong args)
+      </span>
+    );
+  }
+  return <span className="text-emerald-400 text-base leading-none">✓</span>;
 }
 
 function SimulationRow({ sim, index }: { sim: SimulationResult; index: number }) {
@@ -235,9 +270,7 @@ function SimulationRow({ sim, index }: { sim: SimulationResult; index: number })
     <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="text-xs text-slate-500 font-mono">Scenario {index + 1}</div>
-        <span className={`text-base leading-none ${sim.correct ? 'text-emerald-400' : 'text-red-400'}`}>
-          {sim.correct ? '✓' : '✗'}
-        </span>
+        <SimStatusBadge sim={sim} />
       </div>
       <p className="text-sm text-slate-300 mb-3 leading-relaxed">&ldquo;{sim.request}&rdquo;</p>
       <div className="grid grid-cols-2 gap-2 text-xs">
@@ -260,6 +293,35 @@ function SimulationRow({ sim, index }: { sim: SimulationResult; index: number })
           </pre>
         </div>
       )}
+      {sim.argWarning && sim.argIssue && (
+        <p className="text-xs text-amber-300/90 leading-relaxed mt-2">{sim.argIssue}</p>
+      )}
+    </div>
+  );
+}
+
+function VerdictBanner({ verdict }: { verdict: Layer2Verdict }) {
+  if (verdict.shipReady) {
+    return (
+      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex items-center gap-2">
+        <span className="text-emerald-400 text-lg leading-none">✓</span>
+        <span className="text-emerald-300 font-semibold text-sm">Server ready to ship</span>
+      </div>
+    );
+  }
+
+  const issueWord = verdict.issuesCount === 1 ? 'issue' : 'issues';
+  const scenarioWord = verdict.scenariosFailed === 1 ? 'scenario' : 'scenarios';
+
+  return (
+    <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+      <div className="text-amber-300 font-semibold text-sm mb-1">
+        {verdict.issuesCount} {issueWord} found before shipping
+      </div>
+      <div className="text-xs text-amber-200/70">
+        {verdict.readyTools}/{verdict.totalTools} tools ready to ship · {verdict.scenariosFailed} {scenarioWord} failed
+        {' '}· {verdict.issuesCount} {issueWord} need fixing
+      </div>
     </div>
   );
 }
@@ -272,6 +334,8 @@ function Layer2Section({ report }: { report: Layer2Report }) {
 
   return (
     <section className="space-y-6">
+      <VerdictBanner verdict={report.verdict} />
+
       <SectionHeader title="Layer 2 · Behavior Validation" />
 
       {/* Check 1: Clarity */}
