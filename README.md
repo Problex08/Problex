@@ -81,8 +81,8 @@ Running against a real MCP server with 3 tools:
   Layer 2 — Behavior Validation  (claude-haiku-4-5)
 ══════════════════════════════════════════════════════════
 
-  2 issues found before shipping
-  1/3 tools ready to ship · 2 scenarios failed · 2 issues need fixing
+  3 issues found before shipping
+  1/3 tools ready to ship · 2 scenarios failed · 3 issues need fixing
 
   CHECK 1 · CLARITY ANALYSIS
 
@@ -116,9 +116,11 @@ Running against a real MCP server with 3 tools:
   CHECK 3 · COMPATIBILITY TESTING
 
   Scenario 1: "I need to see all the available documentation pages for the
-  tensorflow/tensorflow repo"
-    Expected: read_wiki_structure  →  Picked: read_wiki_structure  ✓
-    Args:     {"repoName":"tensorflow/tensorflow"}
+  tensorflow/tensorflow repo, formatted as markdown"
+    Expected: read_wiki_structure  →  Picked: read_wiki_structure  ⚠ PASS (schema violation)
+    Args:     {"repoName":"tensorflow/tensorflow","format":"markdown"}
+    Schema violation (programmatic): Unexpected field 'format' — not defined
+    in the tool's schema.
 
   Scenario 2: "Show me the full documentation content for kubernetes/kubernetes.
   I want to read the actual pages"
@@ -134,8 +136,8 @@ Running against a real MCP server with 3 tools:
   overview of what's documented there"
     Expected: read_wiki_structure  →  Picked: read_wiki_structure  ⚠ PASS (wrong args)
     Args:     {"repoName":"example/repo"}
-    repoName is 'example/repo' — a placeholder never mentioned in the user's
-    request for 'docker/cli'.
+    Value quality warning (heuristic): repoName is 'example/repo' — a
+    placeholder never mentioned in the user's request for 'docker/cli'.
 
   Scenario 5: "Pull up the documentation for golang/go. I need to read through
   their wiki"
@@ -146,7 +148,7 @@ Running against a real MCP server with 3 tools:
 ══════════════════════════════════════════════════════════
 ```
 
-Scenarios 2 and 5 are the failures the ambiguity check predicted: the agent had a specific page in mind but picked the topic-listing tool anyway, because nothing in either description said which tool to use once you already know the page you want — that's what promotes the confusion pair to HIGH. Scenario 4 is a different failure mode: the right tool was picked, but the agent filled `repoName` with a placeholder instead of the repository actually named in the request — a passing tool selection with unusable arguments underneath it.
+Scenarios 2 and 5 are the failures the ambiguity check predicted: the agent had a specific page in mind but picked the topic-listing tool anyway, because nothing in either description said which tool to use once you already know the page you want — that's what promotes the confusion pair to HIGH. Scenarios 1 and 4 both pick the right tool but still get flagged, for two different reasons that are checked two different ways: Scenario 1's `format` field doesn't exist anywhere in the tool's schema — that's caught by running the arguments through a Zod schema compiled from the tool's actual `inputSchema`, a deterministic check with no model involved. Scenario 4's `repoName` is a well-typed, schema-valid string that just happens to be a placeholder no one asked for — catching that requires judgment, so it's the one case here that goes through Claude.
 
 ## How it works
 
@@ -160,9 +162,11 @@ Layer 1 tells you the schema parses. Layer 2 tells you whether an agent can actu
 
 1. **Clarity analysis** — scores each tool's description 1–10 and states the specific problem (missing format, ambiguous scope, unclear return value) rather than a vague "could be clearer."
 2. **Ambiguity analysis** — compares every pair of tools and flags pairs whose descriptions overlap enough that an agent has no reliable signal to pick between them, naming the exact overlapping words or parameters. Each flagged pair is then ranked **HIGH** if a compatibility-test scenario actually confirmed the mix-up, or **LOW** if it's only a structural resemblance nothing in simulation triggered — HIGH pairs sort first and cite the exact scenario and wrong pick that confirmed them.
-3. **Compatibility testing** — generates realistic user requests (more scenarios for servers with more tools or more flagged ambiguous pairs) with a known-correct tool, then has an agent pick a tool for each request *independently*, blind to which tool was "expected." Scenarios are deliberately seeded to probe any pairs flagged by the ambiguity check. Tool-picking runs at a fixed, deterministic temperature so results are stable across runs. When the right tool *is* picked, a follow-up check separately judges whether the arguments are actually usable — no placeholders, hallucinated values, missing required fields, or nonsensical types — surfaced as a distinct `⚠ PASS (wrong args)` state rather than folded into a hard pass/fail.
+3. **Compatibility testing** — generates realistic user requests (more scenarios for servers with more tools or more flagged ambiguous pairs) with a known-correct tool, then has an agent pick a tool for each request *independently*, blind to which tool was "expected." Scenarios are deliberately seeded to probe any pairs flagged by the ambiguity check. Tool-picking runs at a fixed, deterministic temperature so results are stable across runs. When the right tool *is* picked, its arguments go through two separate checks, in order: first a **schema violation** check — the tool's actual `inputSchema` is compiled into a Zod schema and the picked arguments are validated against it, catching missing required fields, unrecognized field names, and wrong types with zero LLM calls and zero ambiguity. Only if that passes does a **value quality** check ask Claude whether the argument *values* are actually grounded in the request rather than placeholders or hallucinated. Either one surfaces as a distinct `⚠ PASS (schema violation)` / `⚠ PASS (wrong args)` state rather than folding into a hard pass/fail.
 4. **Recommended fixes** — generated for any tool scoring below 7/10, *and* for any tool that was the correct answer in a failed scenario but wasn't picked, even if its clarity score was fine on paper. Fixes explicitly contrast against an ambiguity partner by name if one exists, and cite the scenario that triggered them when relevant.
 5. **Overall verdict** — a one-line summary computed from the above (`N/M tools ready to ship · X scenarios failed · Y issues need fixing`, or `Server ready to ship` when nothing needs fixing) leads the Layer 2 report before any individual check is shown.
+
+Argument-schema validation deliberately isn't a model call: whether a set of arguments matches a JSON Schema is a decidable question, so it's answered by code — same schema, same arguments, same result, every time, for free. Claude is reserved for the parts that genuinely require judgment: clarity, ambiguity, which tool to call, and whether an argument's *value* makes sense — not for something a validator can already answer with certainty.
 
 All Claude responses are parsed and validated through Zod schemas before being trusted — a malformed or off-spec response fails loudly instead of corrupting the report.
 
