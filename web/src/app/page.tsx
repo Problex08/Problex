@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 
-export default function Home() {
-  const [url, setUrl] = useState('');
+function HomeContent() {
+  const params = useSearchParams();
+  const [url, setUrl] = useState(params.get('url') ?? '');
   const [includeAi, setIncludeAi] = useState(true);
   const router = useRouter();
 
@@ -73,5 +74,13 @@ export default function Home() {
         </p>
       </div>
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<main className="min-h-screen bg-canvas" />}>
+      <HomeContent />
+    </Suspense>
   );
 }

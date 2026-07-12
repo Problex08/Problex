@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { Layer1Report, Layer2Report, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix, Severity, ToolSchemaResult } from '@/lib/types';
@@ -279,7 +279,7 @@ function Layer1Section({ report, expandedKeys, onToggle }: {
   const failed = report.results.length - passed;
 
   return (
-    <section id="protocol-validation" className="scroll-mt-16">
+    <section id="protocol-validation" className="scroll-mt-16 print:break-before-page">
       <SectionHeader
         title="Layer 1 · Protocol Validation"
         badge={
@@ -373,7 +373,7 @@ function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: Clarit
           <button
             onClick={copy}
             className="text-[10px] px-1.5 py-0.5 rounded border border-line text-muted
-                       hover:text-fg hover:border-success/50 transition-colors font-mono"
+                       hover:text-fg hover:border-success/50 transition-colors font-mono print-hide"
           >
             {copied ? 'copied' : 'copy'}
           </button>
@@ -582,7 +582,7 @@ function SectionNav({ layer2Ran }: { layer2Ran: boolean }) {
     { href: '#final-verdict', label: 'Final Verdict' },
   ];
   return (
-    <div className="border-t border-line">
+    <div className="border-t border-line print-hide">
       <div className="max-w-2xl mx-auto px-4 py-1 flex items-center gap-x-3 text-[10px] text-muted overflow-x-auto whitespace-nowrap">
         {links.map((l, i) => (
           <span key={l.href} className="flex items-center gap-x-3">
@@ -600,7 +600,7 @@ function SectionNav({ layer2Ran }: { layer2Ran: boolean }) {
 function StickySummaryBar({ summary }: { summary: ReportSummary }) {
   const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
   return (
-    <div className="sticky top-0 z-20 bg-surface border-b border-line">
+    <div className="sticky top-0 z-20 bg-surface border-b border-line print-hide">
       <div className="max-w-2xl mx-auto px-4 py-1.5 flex items-center gap-4 text-[11px] font-mono overflow-x-auto">
         <span className="font-bold text-fg whitespace-nowrap">
           {summary.healthScore}<span className="text-muted font-normal">/100</span>
@@ -800,7 +800,7 @@ function ProductionVerdict({ summary }: { summary: ReportSummary }) {
   const lines = verdictExplanation(summary);
 
   return (
-    <section id="final-verdict" className={`scroll-mt-16 bg-surface border border-line border-l-4 ${accentCls} rounded p-4`}>
+    <section id="final-verdict" className={`scroll-mt-16 bg-surface border border-line border-l-4 ${accentCls} rounded p-4 print:break-before-page`}>
       <div className="flex items-center gap-2 text-sm font-bold mb-3">
         <span>{s.emoji}</span><span className="text-fg">{s.label}</span>
       </div>
@@ -820,7 +820,7 @@ function Layer2Section({ report, summary, expandedKeys, onToggle }: {
   const showConfusionCaveat = report.confusedPairs.length > 0 && simTotal > 0 && simPassed === simTotal;
 
   return (
-    <section id="behavior-validation" className="scroll-mt-16 space-y-6">
+    <section id="behavior-validation" className="scroll-mt-16 space-y-6 print:break-before-page">
       <VerdictBanner summary={summary} />
 
       <SectionHeader title="Layer 2 · Behavior Validation" />
@@ -863,7 +863,7 @@ function Layer2Section({ report, summary, expandedKeys, onToggle }: {
       </div>
 
       {/* Check 3: Simulation */}
-      <div id="compatibility-testing" className="scroll-mt-16">
+      <div id="compatibility-testing" className="scroll-mt-16 print:break-before-page">
         <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-3">
           Check 3 · Compatibility Testing
           <span className={`normal-case text-xs font-mono font-bold ${
@@ -889,6 +889,227 @@ function Layer2Section({ report, summary, expandedKeys, onToggle }: {
         </div>
       </div>
     </section>
+  );
+}
+
+// ─── Export ─────────────────────────────────────────────────────────────────
+
+function downloadTextFile(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function exportFilenameBase(hostname: string): string {
+  const safeHost = hostname.replace(/[^a-z0-9.-]/gi, '-');
+  const date = new Date().toISOString().slice(0, 10);
+  return `mcp-checker-${safeHost}-${date}`;
+}
+
+function buildMarkdownReport(
+  layer1: Layer1Report, layer2: Layer2Report | null, summary: ReportSummary, hostname: string,
+): string {
+  const serverName = layer1.serverName ?? hostname;
+  const lines: string[] = [];
+
+  lines.push(`# MCP Checker Report — ${serverName}`);
+  lines.push(`Generated: ${new Date().toLocaleString()}`);
+  lines.push('');
+
+  lines.push('## Executive Summary');
+  lines.push(`Health Score: ${summary.healthScore}/100`);
+  lines.push(`Production Status: ${PRODUCTION_STATUS_STYLE[summary.productionStatus].label}`);
+  lines.push(`Protocol Validation: ${summary.protocolPassed}/${summary.protocolTotal} Passed`);
+  lines.push(`Behavior Validation: ${summary.behaviorLabel}`);
+  lines.push(`Compatibility Testing: ${summary.layer2Ran ? `${summary.compatibilityPassed}/${summary.compatibilityTotal} Passed` : 'Not run'}`);
+  lines.push(`Critical Issues: ${summary.criticalCount} | Warnings: ${summary.warningCount} | Suggestions: ${summary.suggestionCount}`);
+  lines.push('');
+
+  lines.push('## Protocol Validation');
+  layer1.results.forEach(r => {
+    lines.push(`- \`${r.name}\`: ${r.schemaPassed ? 'PASSED' : 'FAILED'}`);
+    if (!r.schemaPassed && r.schemaErrors?.length) {
+      r.schemaErrors.forEach(err => lines.push(`  - ${err}`));
+    }
+  });
+  lines.push('');
+
+  if (layer2) {
+    const fixByName = new Map(layer2.suggestedFixes.map(f => [f.name, f]));
+
+    lines.push('## Behavior Validation');
+    lines.push('');
+    lines.push('### Clarity Analysis');
+    layer2.clarity.forEach(c => {
+      const severity = claritySeverity(c.score);
+      lines.push(`- \`${c.name}\` — score ${Math.round(c.score)}/10${severity ? ` (${SEVERITY_STYLE[severity].label})` : ''}`);
+      lines.push(`  ${c.verdict}`);
+      const fix = fixByName.get(c.name);
+      if (fix) {
+        lines.push(`  - **Problem:** ${problemText(fix, c)}`);
+        lines.push(`  - **Why This Matters:** ${whyThisMattersText(fix)}`);
+        lines.push('  - **Recommended Fix:**');
+        lines.push('    ```');
+        lines.push(`    ${fix.suggestedDescription}`);
+        lines.push('    ```');
+      }
+    });
+    lines.push('');
+
+    lines.push('### Ambiguity Analysis');
+    if (layer2.confusedPairs.length === 0) {
+      lines.push('No confused tool pairs detected.');
+    } else {
+      layer2.confusedPairs.forEach(pair => {
+        const severity = confusionSeverity(pair);
+        lines.push(`- \`${pair.tool1}\` ↔ \`${pair.tool2}\` — ${SEVERITY_STYLE[severity].label}`);
+        lines.push(`  ${pair.reason}`);
+        if (pair.confirmedByScenario) {
+          lines.push(`  Confirmed by Scenario ${pair.confirmedByScenario} — agent picked ${pair.confirmedByPickedTool} instead.`);
+        }
+      });
+    }
+    lines.push('');
+
+    lines.push('## Compatibility Testing');
+    layer2.simulation.forEach((sim, i) => {
+      const status = !sim.correct ? 'FAIL' : sim.argWarning ? 'WARN' : 'PASS';
+      lines.push(`### Scenario ${i + 1} — ${status}`);
+      lines.push(`- User request: "${sim.request}"`);
+      lines.push(`- Expected tool: \`${sim.expectedTool}\``);
+      lines.push(`- Picked tool: \`${sim.pickedTool}\``);
+      if (sim.argWarning && sim.argIssue) {
+        lines.push(`- ${sim.argIssueType === 'schema' ? 'Schema violation' : 'Value quality warning'}: ${sim.argIssue}`);
+      }
+      lines.push('');
+    });
+  }
+
+  lines.push('## Production Verdict');
+  lines.push(PRODUCTION_STATUS_STYLE[summary.productionStatus].label);
+  lines.push('');
+  verdictExplanation(summary).forEach(line => lines.push(line));
+
+  return lines.join('\n');
+}
+
+function buildJsonReport(
+  layer1: Layer1Report, layer2: Layer2Report | null, summary: ReportSummary, hostname: string,
+) {
+  return {
+    healthScore: summary.healthScore,
+    productionStatus: summary.productionStatus,
+    serverName: layer1.serverName ?? hostname,
+    serverVersion: layer1.serverVersion ?? null,
+    toolCount: layer1.toolCount,
+    generatedAt: new Date().toISOString(),
+    protocol: {
+      tools: layer1.results.map(r => ({
+        name: r.name,
+        passed: r.schemaPassed,
+        schema: r.schemaErrors ?? [],
+      })),
+    },
+    behavior: layer2 ? {
+      clarity: layer2.clarity,
+      ambiguityPairs: layer2.confusedPairs,
+      suggestedFixes: layer2.suggestedFixes,
+    } : null,
+    compatibility: layer2 ? {
+      scenarios: layer2.simulation.map(sim => ({
+        request: sim.request,
+        expected: sim.expectedTool,
+        picked: sim.pickedTool,
+        passed: sim.correct,
+        violation: sim.argWarning ? (sim.argIssue ?? null) : null,
+      })),
+    } : null,
+    verdict: {
+      status: summary.productionStatus,
+      explanation: verdictExplanation(summary).join(' '),
+    },
+  };
+}
+
+type ExportFormat = 'md' | 'pdf' | 'json';
+
+function ExportMenu({ onExport }: { onExport: (format: ExportFormat) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const select = (format: ExportFormat) => {
+    setOpen(false);
+    onExport(format);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="text-[11px] px-2 py-1 rounded border border-line text-muted
+                   hover:text-fg hover:border-suggestion/50 transition-colors font-mono flex items-center gap-1"
+      >
+        Export <span className="text-[8px]">▼</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-48 bg-surface border border-line rounded shadow-lg z-30 overflow-hidden">
+          <button
+            onClick={() => select('md')}
+            className="w-full text-left px-3 py-1.5 text-xs text-fg/85 hover:bg-line/30 transition-colors font-mono"
+          >
+            Export as Markdown (.md)
+          </button>
+          <button
+            onClick={() => select('pdf')}
+            className="w-full text-left px-3 py-1.5 text-xs text-fg/85 hover:bg-line/30 transition-colors font-mono border-t border-line"
+          >
+            Export as PDF (.pdf)
+          </button>
+          <button
+            onClick={() => select('json')}
+            className="w-full text-left px-3 py-1.5 text-xs text-fg/85 hover:bg-line/30 transition-colors font-mono border-t border-line"
+          >
+            Export as JSON (.json)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExportToast({ message }: { message: string }) {
+  return (
+    <div className="fixed bottom-4 right-4 z-50 print-hide bg-surface border border-success/30
+                     text-success text-xs px-3 py-2 rounded shadow-lg">
+      {message}
+    </div>
+  );
+}
+
+// Rendered only in print output — the on-screen header carries the same info
+// via the sticky bar / nav, both of which are hidden on paper.
+function PrintHeader({ serverName }: { serverName: string }) {
+  return (
+    <div className="hidden print:block mb-4 pb-2 border-b border-line">
+      <h1 className="text-lg font-bold text-fg">MCP Checker Report — {serverName}</h1>
+      <p className="text-sm text-muted">{new Date().toLocaleString()}</p>
+    </div>
   );
 }
 
@@ -950,6 +1171,13 @@ function ResultsContent() {
   };
   const expandAll = () => setExpandedKeys(new Set(allCardKeys()));
   const collapseAll = () => setExpandedKeys(new Set());
+
+  const [toast, setToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   // Sequential loading messages. The real network calls are just two fetches
   // (Layer 1, then Layer 2), so each phase's second message is a timed
@@ -1049,6 +1277,23 @@ function ResultsContent() {
 
   const summary = dataReady && !finalizing && layer1 ? computeReportSummary(layer1, layer2) : null;
 
+  const handleExport = (format: ExportFormat) => {
+    if (!layer1 || !summary) return;
+    if (format === 'md') {
+      const content = buildMarkdownReport(layer1, layer2, summary, hostname);
+      downloadTextFile(`${exportFilenameBase(hostname)}.md`, content, 'text/markdown');
+      setToast('✓ Markdown exported successfully.');
+    } else if (format === 'json') {
+      const content = JSON.stringify(buildJsonReport(layer1, layer2, summary, hostname), null, 2);
+      downloadTextFile(`${exportFilenameBase(hostname)}.json`, content, 'application/json');
+      setToast('✓ JSON exported successfully.');
+    } else {
+      expandAll();
+      setToast("✓ Use your browser's Save as PDF option.");
+      setTimeout(() => window.print(), 100);
+    }
+  };
+
   const currentStepLabel: string | null =
     layer1Loading ? (layer1Tick === 0 ? 'Connecting to MCP server...' : 'Validating protocol...') :
     layer2Loading ? (layer2Tick === 0 ? 'Running behavior analysis...' : 'Running compatibility simulations...') :
@@ -1058,20 +1303,25 @@ function ResultsContent() {
   return (
     <div className="min-h-screen bg-canvas">
       {/* Top bar */}
-      <header className="border-b border-line px-4 py-2.5 flex items-center gap-3">
-        <Link href="/"
-          className="text-muted hover:text-fg transition-colors text-xs flex items-center gap-1">
-          ← Back
-        </Link>
+      <header className="border-b border-line px-4 py-2.5 flex items-center justify-between gap-3 print-hide">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[11px] text-muted">Checking</span>
           <span className="font-mono text-xs text-suggestion truncate">{hostname}</span>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <Link href={`/?url=${encodeURIComponent(url)}`}
+            className="text-[11px] px-2 py-1 rounded border border-line text-muted
+                       hover:text-fg hover:border-suggestion/50 transition-colors flex items-center gap-1">
+            ← Re-analyze
+          </Link>
+          {layer1 && summary && <ExportMenu onExport={handleExport} />}
         </div>
       </header>
 
       {summary && <StickySummaryBar summary={summary} />}
 
       <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
+        {summary && <PrintHeader serverName={layer1?.serverName ?? hostname} />}
         {/* Executive summary dashboard — leads the whole report */}
         {summary && <ExecutiveSummary summary={summary} />}
         {!summary && dataReady && finalizing && (
@@ -1096,7 +1346,7 @@ function ResultsContent() {
                   <span className="text-muted">{layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''} found</span>
                 )}
               </div>
-              <div className="flex items-center gap-1.5 flex-shrink-0">
+              <div className="flex items-center gap-1.5 flex-shrink-0 print-hide">
                 <button
                   onClick={expandAll}
                   className="text-[10px] px-1.5 py-0.5 rounded border border-line text-muted
@@ -1146,7 +1396,7 @@ function ResultsContent() {
 
         {/* Check another */}
         {!layer1Loading && (
-          <div className="pt-3 border-t border-line">
+          <div className="pt-3 border-t border-line print-hide">
             <Link href="/"
               className="text-xs text-muted hover:text-fg transition-colors">
               ← Check another server
@@ -1154,6 +1404,8 @@ function ResultsContent() {
           </div>
         )}
       </main>
+
+      {toast && <ExportToast message={toast} />}
     </div>
   );
 }
