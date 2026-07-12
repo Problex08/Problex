@@ -597,23 +597,35 @@ function SectionNav({ layer2Ran }: { layer2Ran: boolean }) {
 
 // Compact bar pinned to the top of the viewport once the page scrolls past the
 // header — a VS Code status-bar: solid surface, tight padding, small text.
-function StickySummaryBar({ summary }: { summary: ReportSummary }) {
+function StickySummaryBar({ summary, url, onExport }: {
+  summary: ReportSummary; url: string; onExport: (format: ExportFormat) => void;
+}) {
   const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
   return (
     <div className="sticky top-0 z-20 bg-surface border-b border-line print-hide">
-      <div className="max-w-2xl mx-auto px-4 py-1.5 flex items-center gap-4 text-[11px] font-mono overflow-x-auto">
-        <span className="font-bold text-fg whitespace-nowrap">
-          {summary.healthScore}<span className="text-muted font-normal">/100</span>
-        </span>
-        <span className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${
-          summary.productionStatus === 'ready' ? 'text-success' :
-          summary.productionStatus === 'minor' ? 'text-warning' : 'text-critical'
-        }`}>
-          {s.emoji} {s.label}
-        </span>
-        <span className="text-critical whitespace-nowrap">🔴 {summary.criticalCount}</span>
-        <span className="text-warning whitespace-nowrap">🟡 {summary.warningCount}</span>
-        <span className="text-suggestion whitespace-nowrap">🔵 {summary.suggestionCount}</span>
+      <div className="max-w-2xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-4 text-[11px] font-mono overflow-x-auto">
+          <span className="font-bold text-fg whitespace-nowrap">
+            {summary.healthScore}<span className="text-muted font-normal">/100</span>
+          </span>
+          <span className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${
+            summary.productionStatus === 'ready' ? 'text-success' :
+            summary.productionStatus === 'minor' ? 'text-warning' : 'text-critical'
+          }`}>
+            {s.emoji} {s.label}
+          </span>
+          <span className="text-critical whitespace-nowrap">🔴 {summary.criticalCount}</span>
+          <span className="text-warning whitespace-nowrap">🟡 {summary.warningCount}</span>
+          <span className="text-suggestion whitespace-nowrap">🔵 {summary.suggestionCount}</span>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <Link href={`/?url=${encodeURIComponent(url)}`}
+            className="text-[11px] px-2 py-1 rounded border border-line text-muted
+                       hover:text-fg hover:border-suggestion/50 transition-colors flex items-center gap-1 whitespace-nowrap">
+            ← Re-analyze
+          </Link>
+          <ExportMenu onExport={onExport} />
+        </div>
       </div>
       <SectionNav layer2Ran={summary.layer2Ran} />
     </div>
@@ -1303,22 +1315,14 @@ function ResultsContent() {
   return (
     <div className="min-h-screen bg-canvas">
       {/* Top bar */}
-      <header className="border-b border-line px-4 py-2.5 flex items-center justify-between gap-3 print-hide">
+      <header className="border-b border-line px-4 py-2.5 flex items-center gap-3 print-hide">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[11px] text-muted">Checking</span>
           <span className="font-mono text-xs text-suggestion truncate">{hostname}</span>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <Link href={`/?url=${encodeURIComponent(url)}`}
-            className="text-[11px] px-2 py-1 rounded border border-line text-muted
-                       hover:text-fg hover:border-suggestion/50 transition-colors flex items-center gap-1">
-            ← Re-analyze
-          </Link>
-          {layer1 && summary && <ExportMenu onExport={handleExport} />}
-        </div>
       </header>
 
-      {summary && <StickySummaryBar summary={summary} />}
+      {summary && <StickySummaryBar summary={summary} url={url} onExport={handleExport} />}
 
       <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
         {summary && <PrintHeader serverName={layer1?.serverName ?? hostname} />}
