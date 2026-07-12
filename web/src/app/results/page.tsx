@@ -9,14 +9,14 @@ import type { Layer1Report, Layer2Report, ClarityResult, ConfusionPair, Simulati
 
 function PassBadge({ passed }: { passed: boolean }) {
   return passed ? (
-    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 text-emerald-400
-                     border border-emerald-500/30 rounded-full text-xs font-semibold whitespace-nowrap">
-      ✓ PASSED
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-success/10 text-success
+                     border border-success/30 rounded text-[10px] font-mono font-semibold whitespace-nowrap">
+      PASSED
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-red-500/10 text-red-400
-                     border border-red-500/30 rounded-full text-xs font-semibold whitespace-nowrap">
-      ✗ FAILED
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-critical/10 text-critical
+                     border border-critical/30 rounded text-[10px] font-mono font-semibold whitespace-nowrap">
+      FAILED
     </span>
   );
 }
@@ -24,24 +24,24 @@ function PassBadge({ passed }: { passed: boolean }) {
 function ScoreBadge({ score }: { score: number }) {
   const n = Math.round(score);
   const cls =
-    n >= 8 ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' :
-    n >= 5 ? 'text-amber-400  bg-amber-500/10  border-amber-500/30' :
-             'text-red-400    bg-red-500/10    border-red-500/30';
+    n >= 8 ? 'text-success border-success/30' :
+    n >= 5 ? 'text-warning border-warning/30' :
+             'text-critical border-critical/30';
   return (
-    <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-sm font-bold border ${cls}`}>
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-mono font-bold border ${cls}`}>
       {n}/10
     </span>
   );
 }
 
 function Skeleton({ className }: { className?: string }) {
-  return <div className={`animate-pulse bg-slate-800 rounded-lg ${className ?? ''}`} />;
+  return <div className={`animate-pulse bg-line rounded ${className ?? ''}`} />;
 }
 
 function Spinner({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-3 text-slate-400 text-sm py-2">
-      <svg className="animate-spin h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24">
+    <div className="flex items-center gap-3 text-muted text-sm py-2">
+      <svg className="animate-spin h-4 w-4 text-suggestion" fill="none" viewBox="0 0 24 24">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
         <path className="opacity-75" fill="currentColor"
           d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -69,19 +69,19 @@ function friendlyErrorMessage(e: unknown): string {
 function ErrorBox({ message, defaultHeader }: { message: string; defaultHeader: string }) {
   const isRateLimit = message === RATE_LIMIT_MESSAGE;
   return (
-    <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm">
-      <div className="font-semibold mb-1">{isRateLimit ? 'Rate limit reached' : defaultHeader}</div>
-      {message}
+    <div className="bg-surface border border-line border-l-4 border-l-critical rounded p-3 text-sm">
+      <div className="font-semibold mb-1 text-critical">{isRateLimit ? 'Rate limit reached' : defaultHeader}</div>
+      <div className="text-fg/80">{message}</div>
     </div>
   );
 }
 
 function SectionHeader({ title, badge }: { title: string; badge?: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 mb-4">
-      <h2 className="text-base font-bold text-slate-200 tracking-wide uppercase text-xs">{title}</h2>
+    <div className="flex items-center gap-2.5 mb-3">
+      <h2 className="text-[11px] font-semibold text-muted tracking-wider uppercase">{title}</h2>
       {badge}
-      <div className="flex-1 h-px bg-slate-800" />
+      <div className="flex-1 h-px bg-line" />
     </div>
   );
 }
@@ -89,16 +89,16 @@ function SectionHeader({ title, badge }: { title: string; badge?: React.ReactNod
 // ─── Severity ─────────────────────────────────────────────────────────────────
 
 const SEVERITY_STYLE: Record<Severity, { emoji: string; label: string; cls: string }> = {
-  critical:   { emoji: '🔴', label: 'Critical',   cls: 'bg-red-500/10 text-red-400 border-red-500/30' },
-  warning:    { emoji: '🟡', label: 'Warning',    cls: 'bg-amber-500/10 text-amber-400 border-amber-500/30' },
-  suggestion: { emoji: '🔵', label: 'Suggestion', cls: 'bg-blue-500/10 text-blue-400 border-blue-500/30' },
+  critical:   { emoji: '🔴', label: 'Critical',   cls: 'bg-critical/10 text-critical border-critical/30' },
+  warning:    { emoji: '🟡', label: 'Warning',    cls: 'bg-warning/10 text-warning border-warning/30' },
+  suggestion: { emoji: '🔵', label: 'Suggestion', cls: 'bg-suggestion/10 text-suggestion border-suggestion/30' },
 };
 
 function SeverityBadge({ severity }: { severity: Severity }) {
   const s = SEVERITY_STYLE[severity];
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold
-                      border uppercase tracking-wide whitespace-nowrap ${s.cls}`}>
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium
+                      border whitespace-nowrap ${s.cls}`}>
       {s.emoji} {s.label}
     </span>
   );
@@ -107,10 +107,10 @@ function SeverityBadge({ severity }: { severity: Severity }) {
 // Left-edge accent so severity reads instantly without parsing text — red demands
 // attention first, amber second, blue is informational, green confirms it's fine.
 const SEVERITY_ACCENT: Record<Severity | 'ok', string> = {
-  critical:   'border-l-red-500',
-  warning:    'border-l-amber-500',
-  suggestion: 'border-l-blue-500',
-  ok:         'border-l-emerald-500',
+  critical:   'border-l-critical',
+  warning:    'border-l-warning',
+  suggestion: 'border-l-suggestion',
+  ok:         'border-l-success',
 };
 
 // Wrong tool picked, or a protocol schema that doesn't validate — an agent
@@ -241,10 +241,10 @@ function Layer1Section({ report }: { report: Layer1Report }) {
       <SectionHeader
         title="Layer 1 · Protocol Validation"
         badge={
-          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
             failed === 0
-              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-              : 'bg-red-500/10 text-red-400 border border-red-500/30'
+              ? 'bg-success/10 text-success border-success/30'
+              : 'bg-critical/10 text-critical border-critical/30'
           }`}>
             {passed}/{report.results.length} passed
           </span>
@@ -252,39 +252,39 @@ function Layer1Section({ report }: { report: Layer1Report }) {
       />
 
       {report.noToolsCapability && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-amber-300 text-sm">
+        <div className="bg-surface border border-line border-l-4 border-l-warning rounded p-3 text-warning text-sm">
           This server does not advertise tool support.
         </div>
       )}
 
-      <div className="space-y-3">
+      <div className="space-y-2">
         {report.results.map((tool, i) => {
           const severity = schemaSeverity(tool.schemaPassed);
           const accent = SEVERITY_ACCENT[severity ?? 'ok'];
           return (
           <div key={tool.name}
-            className={`border-l-4 ${accent} bg-slate-900 border-y border-r border-slate-800 rounded-r-xl p-4 hover:border-slate-700 transition-colors`}>
+            className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded p-3`}>
             <div className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs text-slate-600 font-mono">[{i + 1}/{report.results.length}]</span>
-                  <span className="font-semibold text-slate-100 font-mono text-sm">{tool.name}</span>
+                  <span className="text-[10px] text-muted font-mono">[{i + 1}/{report.results.length}]</span>
+                  <span className="font-semibold text-fg font-mono text-sm">{tool.name}</span>
                   {tool.title && tool.title !== tool.name && (
-                    <span className="text-xs text-slate-500 truncate">· {tool.title}</span>
+                    <span className="text-xs text-muted truncate">· {tool.title}</span>
                   )}
                 </div>
                 {tool.description && (
-                  <p className="text-xs text-slate-400 leading-relaxed line-clamp-2">{tool.description}</p>
+                  <p className="text-xs text-muted leading-snug line-clamp-2">{tool.description}</p>
                 )}
                 {tool.schemaErrors && tool.schemaErrors.length > 0 && (
-                  <ul className="mt-2 space-y-1">
+                  <ul className="mt-1.5 space-y-0.5">
                     {tool.schemaErrors.map((err, ei) => (
-                      <li key={ei} className="text-xs text-red-400 font-mono">{err}</li>
+                      <li key={ei} className="text-xs text-critical font-mono">{err}</li>
                     ))}
                   </ul>
                 )}
               </div>
-              <div className="flex flex-col items-end gap-1.5">
+              <div className="flex flex-col items-end gap-1">
                 <PassBadge passed={tool.schemaPassed} />
                 {severity && <SeverityBadge severity={severity} />}
               </div>
@@ -300,19 +300,19 @@ function Layer1Section({ report }: { report: Layer1Report }) {
 function Layer1Skeleton() {
   return (
     <section>
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-2.5 mb-3">
         <Skeleton className="h-3 w-40" />
-        <div className="flex-1 h-px bg-slate-800" />
+        <div className="flex-1 h-px bg-line" />
       </div>
       <div className="space-y-2">
         {[1, 2, 3].map(i => (
-          <div key={i} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <div key={i} className="bg-surface border border-line rounded p-3">
             <div className="flex items-center justify-between">
               <div className="space-y-2">
                 <Skeleton className="h-4 w-36" />
                 <Skeleton className="h-3 w-60" />
               </div>
-              <Skeleton className="h-6 w-20 rounded-full" />
+              <Skeleton className="h-5 w-16 rounded" />
             </div>
           </div>
         ))}
@@ -359,46 +359,37 @@ function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: Clarit
   };
 
   return (
-    <div className="mt-3 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-4 space-y-3">
+    <div className="mt-2 bg-canvas border border-line rounded p-3 space-y-2.5">
       <div>
-        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Problem</span>
-        <p className="text-xs text-slate-300 leading-relaxed mt-1">{problemText(fix, clarity)}</p>
+        <span className="text-[10px] font-semibold text-muted uppercase tracking-wide">Problem</span>
+        <p className="text-xs text-fg/85 leading-snug mt-0.5">{problemText(fix, clarity)}</p>
       </div>
 
       <div>
-        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Why this matters</span>
-        <p className="text-xs text-slate-400 leading-relaxed mt-1">{whyThisMattersText(fix)}</p>
+        <span className="text-[10px] font-semibold text-muted uppercase tracking-wide">Why this matters</span>
+        <p className="text-xs text-muted leading-snug mt-0.5">{whyThisMattersText(fix)}</p>
       </div>
 
       <div>
-        <div className="flex items-center justify-between gap-2 mb-1">
-          <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Recommended fix</span>
+        <div className="flex items-center justify-between gap-2 mb-0.5">
+          <span className="text-[10px] font-semibold text-success uppercase tracking-wide">Recommended fix</span>
           <button
             onClick={copy}
-            className="text-xs px-2 py-0.5 rounded border border-emerald-500/30 text-emerald-300
-                       hover:bg-emerald-500/10 transition-colors"
+            className="text-[10px] px-1.5 py-0.5 rounded border border-line text-muted
+                       hover:text-fg hover:border-success/50 transition-colors font-mono"
           >
-            {copied ? 'Copied!' : 'Copy'}
+            {copied ? 'copied' : 'copy'}
           </button>
         </div>
-        <p className="text-xs text-emerald-200/90 leading-relaxed">{fix.suggestedDescription}</p>
+        <p className="text-xs text-fg/85 leading-snug">{fix.suggestedDescription}</p>
         {fix.scenarioContext && (
-          <p className="text-xs text-emerald-400/70 leading-relaxed mt-2">
+          <p className="text-[11px] text-muted leading-snug mt-1.5">
             Triggered by Scenario {fix.scenarioContext.scenarioIndex} — agent picked{' '}
             {fix.scenarioContext.pickedTool} instead of this tool.
           </p>
         )}
       </div>
     </div>
-  );
-}
-
-function PassedBadge() {
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold
-                     border uppercase tracking-wide whitespace-nowrap bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
-      ✓ Passed
-    </span>
   );
 }
 
@@ -412,26 +403,23 @@ function ToolCard({ result, fix }: { result: ClarityResult; fix?: SuggestedFix }
   const accent = SEVERITY_ACCENT[severity ?? 'ok'];
 
   return (
-    <div className={`border-l-4 ${accent} bg-slate-900 border-y border-r border-slate-800 rounded-r-xl overflow-hidden`}>
+    <div className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded overflow-hidden`}>
       <button
         type="button"
         onClick={() => setExpanded(v => !v)}
-        className="w-full flex items-start gap-3 p-4 text-left hover:bg-slate-800/30 transition-colors"
+        className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-line/20 transition-colors"
       >
         <ScoreBadge score={result.score} />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="font-mono text-sm font-semibold text-slate-200">{result.name}</span>
-            {severity ? <SeverityBadge severity={severity} /> : <PassedBadge />}
-          </div>
-          <p className={`text-xs text-slate-400 leading-relaxed ${expanded ? '' : 'truncate'}`}>{result.verdict}</p>
-        </div>
-        <span className="text-slate-600 text-xs mt-1.5 flex-shrink-0 select-none">{expanded ? '▲' : '▼'}</span>
+        <span className="font-mono text-sm text-fg flex-1 min-w-0 truncate text-left">{result.name}</span>
+        {severity ? <SeverityBadge severity={severity} /> : <PassBadge passed />}
+        <span className="text-muted text-[10px] flex-shrink-0 select-none font-mono">{expanded ? '−' : '+'}</span>
       </button>
 
-      {expanded && fix && (
-        <div className="px-4 pb-4">
-          <SuggestedFixBox fix={fix} clarity={result} />
+      {expanded && (
+        <div className="px-3 pb-3">
+          {fix
+            ? <SuggestedFixBox fix={fix} clarity={result} />
+            : <p className="text-xs text-muted leading-snug border-t border-line pt-2">{result.verdict}</p>}
         </div>
       )}
     </div>
@@ -443,24 +431,22 @@ function ConfusionRow({ pair }: { pair: ConfusionPair }) {
   const severity = confusionSeverity(pair);
   const accent = SEVERITY_ACCENT[severity];
   return (
-    <div className={`border-l-4 ${accent} border-y border-r border-slate-800 rounded-r-xl p-4 ${
-      isHigh ? 'bg-amber-500/5' : 'bg-blue-500/5'
-    }`}>
-      <div className="flex items-center gap-2 mb-2 text-sm font-mono flex-wrap">
-        <span className={`font-semibold ${isHigh ? 'text-amber-300' : 'text-blue-300'}`}>{pair.tool1}</span>
-        <span className="text-slate-500">↔</span>
-        <span className={`font-semibold ${isHigh ? 'text-amber-300' : 'text-blue-300'}`}>{pair.tool2}</span>
+    <div className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded p-3`}>
+      <div className="flex items-center gap-2 mb-1.5 text-sm font-mono flex-wrap">
+        <span className={isHigh ? 'text-warning' : 'text-suggestion'}>{pair.tool1}</span>
+        <span className="text-muted">↔</span>
+        <span className={isHigh ? 'text-warning' : 'text-suggestion'}>{pair.tool2}</span>
         <SeverityBadge severity={severity} />
         {isHigh && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300
-                           font-sans font-semibold uppercase tracking-wide whitespace-nowrap">
-            Confirmed by simulation
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-warning/10 text-warning
+                           font-sans font-medium whitespace-nowrap border border-warning/30">
+            confirmed by simulation
           </span>
         )}
       </div>
-      <p className="text-xs text-slate-400 leading-relaxed">{pair.reason}</p>
+      <p className="text-xs text-muted leading-snug">{pair.reason}</p>
       {isHigh && pair.confirmedByScenario && (
-        <p className="text-xs text-amber-300/80 leading-relaxed mt-1.5">
+        <p className="text-[11px] text-warning/90 leading-snug mt-1">
           Confirmed by Scenario {pair.confirmedByScenario} — agent picked {pair.confirmedByPickedTool} instead.
         </p>
       )}
@@ -468,59 +454,63 @@ function ConfusionRow({ pair }: { pair: ConfusionPair }) {
   );
 }
 
-function SimStatusBadge({ sim }: { sim: SimulationResult }) {
+function SimStatusTag({ sim }: { sim: SimulationResult }) {
   if (!sim.correct) {
-    return <span className="text-red-400 text-base leading-none">✗</span>;
-  }
-  if (sim.argWarning) {
-    const label = sim.argIssueType === 'schema' ? 'PASS (schema violation)' : 'PASS (wrong args)';
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold
-                       bg-amber-500/10 text-amber-400 border border-amber-500/30 whitespace-nowrap">
-        ⚠ {label}
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold
+                       bg-critical/10 text-critical border border-critical/30">
+        FAIL
       </span>
     );
   }
-  return <span className="text-emerald-400 text-base leading-none">✓</span>;
+  if (sim.argWarning) {
+    const suffix = sim.argIssueType === 'schema' ? 'schema' : 'args';
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold
+                       bg-warning/10 text-warning border border-warning/30 whitespace-nowrap">
+        WARN · {suffix}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold
+                     bg-success/10 text-success border border-success/30">
+      PASS
+    </span>
+  );
 }
 
 function SimulationRow({ sim, index }: { sim: SimulationResult; index: number }) {
   const severity = simulationSeverity(sim);
   const accent = SEVERITY_ACCENT[severity ?? 'ok'];
   return (
-    <div className={`border-l-4 ${accent} bg-slate-900 border-y border-r border-slate-800 rounded-r-xl p-4`}>
-      <div className="flex items-start justify-between gap-3 mb-2">
+    <div className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded p-3`}>
+      <div className="flex items-center justify-between gap-3 mb-1.5">
         <div className="flex items-center gap-2">
-          <div className="text-xs text-slate-500 font-mono">Scenario {index + 1}</div>
+          <span className="text-[10px] text-muted font-mono">SCENARIO {index + 1}</span>
           {severity && <SeverityBadge severity={severity} />}
         </div>
-        <SimStatusBadge sim={sim} />
+        <SimStatusTag sim={sim} />
       </div>
-      <p className="text-sm text-slate-300 mb-3 leading-relaxed">&ldquo;{sim.request}&rdquo;</p>
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div>
-          <div className="text-slate-500 mb-1">Expected</div>
-          <div className="font-mono text-slate-300 bg-slate-800 px-2 py-1 rounded">{sim.expectedTool}</div>
-        </div>
-        <div>
-          <div className="text-slate-500 mb-1">Picked</div>
-          <div className={`font-mono px-2 py-1 rounded ${
-            sim.correct ? 'text-emerald-300 bg-emerald-500/10' : 'text-red-300 bg-red-500/10'
-          }`}>{sim.pickedTool}</div>
-        </div>
+      <p className="text-xs text-fg/85 mb-2 leading-snug">&ldquo;{sim.request}&rdquo;</p>
+
+      <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-xs font-mono border-t border-line pt-2">
+        <span className="text-muted">expected</span>
+        <span className="text-fg">{sim.expectedTool}</span>
+        <span className="text-muted">→</span>
+        <span className="text-muted">picked</span>
+        <span className={sim.correct ? 'text-success' : 'text-critical'}>{sim.pickedTool}</span>
       </div>
+
       {Object.keys(sim.pickedArgs).length > 0 && (
-        <div className="mt-2">
-          <div className="text-xs text-slate-500 mb-1">Args</div>
-          <pre className="text-xs text-slate-400 bg-slate-800 px-2 py-1.5 rounded overflow-x-auto">
-            {JSON.stringify(sim.pickedArgs, null, 2)}
-          </pre>
-        </div>
+        <pre className="mt-1.5 text-[11px] text-muted bg-canvas border border-line px-2 py-1 rounded overflow-x-auto">
+          {JSON.stringify(sim.pickedArgs)}
+        </pre>
       )}
       {sim.argWarning && sim.argIssue && (
-        <p className="text-xs text-amber-300/90 leading-relaxed mt-2">
-          <span className="font-semibold uppercase tracking-wide text-[10px] text-amber-400/80 mr-1">
-            {sim.argIssueType === 'schema' ? 'Schema violation (programmatic):' : 'Value quality warning (heuristic):'}
+        <p className="text-xs text-warning/90 leading-snug mt-1.5">
+          <span className="font-semibold uppercase tracking-wide text-[10px] text-warning/70 mr-1">
+            {sim.argIssueType === 'schema' ? 'schema violation (programmatic):' : 'value quality warning (heuristic):'}
           </span>
           {sim.argIssue}
         </p>
@@ -532,9 +522,9 @@ function SimulationRow({ sim, index }: { sim: SimulationResult; index: number })
 function VerdictBanner({ summary }: { summary: ReportSummary }) {
   if (summary.productionStatus === 'ready') {
     return (
-      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex items-center gap-2">
-        <span className="text-emerald-400 text-lg leading-none">✓</span>
-        <span className="text-emerald-300 font-semibold text-sm">Server ready to ship</span>
+      <div className="bg-surface border border-line border-l-4 border-l-success rounded p-3 flex items-center gap-2">
+        <span className="text-success text-sm leading-none">✓</span>
+        <span className="text-success font-semibold text-sm">Server ready to ship</span>
       </div>
     );
   }
@@ -549,14 +539,14 @@ function VerdictBanner({ summary }: { summary: ReportSummary }) {
     : `${summary.improvementOpportunities} ${opportunityWord} found before shipping`;
 
   return (
-    <div className={`rounded-xl p-4 border ${
-      notReady ? 'bg-red-500/10 border-red-500/30' : 'bg-amber-500/10 border-amber-500/30'
+    <div className={`bg-surface border border-line border-l-4 rounded p-3 ${
+      notReady ? 'border-l-critical' : 'border-l-warning'
     }`}>
-      <div className={`font-semibold text-sm mb-1 ${notReady ? 'text-red-300' : 'text-amber-300'}`}>
+      <div className={`font-semibold text-sm mb-1 ${notReady ? 'text-critical' : 'text-warning'}`}>
         {headline}
       </div>
-      <div className={`text-xs ${notReady ? 'text-red-200/70' : 'text-amber-200/70'}`}>
-        {summary.protocolPassed}/{summary.protocolTotal} Protocol checks passed · {summary.compatibilityPassed}/{summary.compatibilityTotal} Compatibility scenarios passed
+      <div className="text-xs text-muted font-mono">
+        {summary.protocolPassed}/{summary.protocolTotal} protocol checks passed · {summary.compatibilityPassed}/{summary.compatibilityTotal} compatibility scenarios passed
         {' '}· {summary.improvementOpportunities} {opportunityWord} · {criticalText}
       </div>
     </div>
@@ -566,39 +556,39 @@ function VerdictBanner({ summary }: { summary: ReportSummary }) {
 // ─── Executive summary (top) & production verdict (bottom) ───────────────────
 
 const PRODUCTION_STATUS_STYLE: Record<ReportSummary['productionStatus'], { emoji: string; label: string; cls: string }> = {
-  ready:      { emoji: '✅', label: 'Ready for Production',            cls: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' },
-  minor:      { emoji: '⚠',  label: 'Ready with Minor Improvements',   cls: 'text-amber-300 bg-amber-500/10 border-amber-500/30' },
-  'not-ready':{ emoji: '❌', label: 'Not Ready',                       cls: 'text-red-300 bg-red-500/10 border-red-500/30' },
+  ready:      { emoji: '✅', label: 'Ready for Production',            cls: 'text-success bg-success/10 border-success/30' },
+  minor:      { emoji: '⚠',  label: 'Ready with Minor Improvements',   cls: 'text-warning bg-warning/10 border-warning/30' },
+  'not-ready':{ emoji: '❌', label: 'Not Ready',                       cls: 'text-critical bg-critical/10 border-critical/30' },
 };
 
 function ProductionStatusBadge({ status }: { status: ReportSummary['productionStatus'] }) {
   const s = PRODUCTION_STATUS_STYLE[status];
   return (
-    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold border ${s.cls}`}>
+    <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold border ${s.cls}`}>
       {s.emoji} {s.label}
     </span>
   );
 }
 
 // Compact bar pinned to the top of the viewport once the page scrolls past the
-// header, so health/severity context stays visible through a long report.
+// header — a VS Code status-bar: solid surface, tight padding, small text.
 function StickySummaryBar({ summary }: { summary: ReportSummary }) {
   const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
   return (
-    <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800">
-      <div className="max-w-2xl mx-auto px-4 py-2.5 flex items-center gap-4 text-xs overflow-x-auto">
-        <span className="font-bold text-slate-200 whitespace-nowrap">
-          {summary.healthScore}<span className="text-slate-500 font-normal">/100</span>
+    <div className="sticky top-0 z-20 bg-surface border-b border-line">
+      <div className="max-w-2xl mx-auto px-4 py-1.5 flex items-center gap-4 text-[11px] font-mono overflow-x-auto">
+        <span className="font-bold text-fg whitespace-nowrap">
+          {summary.healthScore}<span className="text-muted font-normal">/100</span>
         </span>
         <span className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${
-          summary.productionStatus === 'ready' ? 'text-emerald-300' :
-          summary.productionStatus === 'minor' ? 'text-amber-300' : 'text-red-300'
+          summary.productionStatus === 'ready' ? 'text-success' :
+          summary.productionStatus === 'minor' ? 'text-warning' : 'text-critical'
         }`}>
           {s.emoji} {s.label}
         </span>
-        <span className="text-red-400 whitespace-nowrap">🔴 {summary.criticalCount}</span>
-        <span className="text-amber-400 whitespace-nowrap">🟡 {summary.warningCount}</span>
-        <span className="text-blue-400 whitespace-nowrap">🔵 {summary.suggestionCount}</span>
+        <span className="text-critical whitespace-nowrap">🔴 {summary.criticalCount}</span>
+        <span className="text-warning whitespace-nowrap">🟡 {summary.warningCount}</span>
+        <span className="text-suggestion whitespace-nowrap">🔵 {summary.suggestionCount}</span>
       </div>
     </div>
   );
@@ -606,46 +596,46 @@ function StickySummaryBar({ summary }: { summary: ReportSummary }) {
 
 function HealthScoreBadge({ score }: { score: number }) {
   const cls =
-    score >= 80 ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' :
-    score >= 50 ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' :
-                  'text-red-400 border-red-500/30 bg-red-500/10';
+    score >= 80 ? 'text-success border-success/30' :
+    score >= 50 ? 'text-warning border-warning/30' :
+                  'text-critical border-critical/30';
   return (
-    <div className={`flex flex-col items-center justify-center w-20 h-20 rounded-2xl border flex-shrink-0 ${cls}`}>
-      <span className="text-2xl font-bold leading-none">{score}</span>
-      <span className="text-[9px] uppercase tracking-wide mt-1 opacity-80">Health</span>
+    <div className={`flex flex-col items-center justify-center w-16 h-16 rounded border flex-shrink-0 bg-canvas ${cls}`}>
+      <span className="text-xl font-mono font-bold leading-none">{score}</span>
+      <span className="text-[9px] uppercase tracking-wide mt-1 text-muted">health</span>
     </div>
   );
 }
 
 function StatRow({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'good' | 'bad' | 'neutral' }) {
-  const cls = tone === 'good' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-slate-200';
+  const cls = tone === 'good' ? 'text-success' : tone === 'bad' ? 'text-critical' : 'text-fg';
   return (
-    <div className="flex items-center justify-between py-2">
-      <span className="text-xs text-slate-500">{label}</span>
-      <span className={`text-xs font-semibold ${cls}`}>{value}</span>
+    <div className="flex items-center justify-between py-1.5">
+      <span className="text-xs text-muted">{label}</span>
+      <span className={`text-xs font-mono font-semibold ${cls}`}>{value}</span>
     </div>
   );
 }
 
-// "██████████░░ 8/12 Passed"-style bar — a filled track sized to the pass rate,
+// "████████░░" thin, square-edged bar — a filled track sized to the pass rate,
 // so protocol/behavior/compatibility health reads at a glance, not just as a fraction.
 function ProgressBar({ fraction, tone }: { fraction: number; tone: 'good' | 'bad' | 'neutral' }) {
   const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
-  const barCls = tone === 'good' ? 'bg-emerald-400' : tone === 'bad' ? 'bg-red-400' : 'bg-amber-400';
+  const barCls = tone === 'good' ? 'bg-success' : tone === 'bad' ? 'bg-critical' : 'bg-warning';
   return (
-    <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-      <div className={`h-full rounded-full ${barCls}`} style={{ width: `${pct}%` }} />
+    <div className="h-1 bg-line overflow-hidden">
+      <div className={barCls} style={{ width: `${pct}%`, height: '100%' }} />
     </div>
   );
 }
 
 function StatBarRow({ label, value, fraction, tone }: { label: string; value: string; fraction: number; tone: 'good' | 'bad' | 'neutral' }) {
-  const cls = tone === 'good' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-slate-200';
+  const cls = tone === 'good' ? 'text-success' : tone === 'bad' ? 'text-critical' : 'text-fg';
   return (
-    <div className="py-2">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-xs text-slate-500">{label}</span>
-        <span className={`text-xs font-semibold ${cls}`}>{value}</span>
+    <div className="py-1.5">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs text-muted">{label}</span>
+        <span className={`text-xs font-mono font-semibold ${cls}`}>{value}</span>
       </div>
       <ProgressBar fraction={fraction} tone={tone} />
     </div>
@@ -665,16 +655,16 @@ function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
     : summary.behaviorLabel;
 
   return (
-    <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-      <div className="flex items-start gap-4 mb-6">
+    <section className="bg-surface border border-line rounded p-4">
+      <div className="flex items-start gap-3 mb-4">
         <HealthScoreBadge score={summary.healthScore} />
-        <div className="flex-1 min-w-0 pt-1">
-          <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide mb-2.5">Executive Summary</h2>
+        <div className="flex-1 min-w-0 pt-0.5">
+          <h2 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2">Executive Summary</h2>
           <ProductionStatusBadge status={summary.productionStatus} />
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-x-8">
+      <div className="grid grid-cols-2 gap-x-6">
         <div>
           <StatBarRow
             label="Protocol Validation"
@@ -703,9 +693,9 @@ function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
       </div>
 
       {summary.highlights.length > 0 && (
-        <div className="mt-5 pt-5 border-t border-slate-800 space-y-1.5">
+        <div className="mt-3 pt-3 border-t border-line space-y-1">
           {summary.highlights.map(h => (
-            <div key={h} className="text-xs text-emerald-400 flex items-center gap-1.5">
+            <div key={h} className="text-xs text-success flex items-center gap-1.5">
               <span>✓</span><span>{h}</span>
             </div>
           ))}
@@ -769,14 +759,17 @@ function verdictExplanation(summary: ReportSummary): string[] {
 
 function ProductionVerdict({ summary }: { summary: ReportSummary }) {
   const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
+  const accentCls =
+    summary.productionStatus === 'ready' ? 'border-l-success' :
+    summary.productionStatus === 'minor' ? 'border-l-warning' : 'border-l-critical';
   const lines = verdictExplanation(summary);
 
   return (
-    <section className={`rounded-2xl border p-6 ${s.cls}`}>
-      <div className="flex items-center gap-2 text-base font-bold mb-4">
-        <span>{s.emoji}</span><span>{s.label}</span>
+    <section className={`bg-surface border border-line border-l-4 ${accentCls} rounded p-4`}>
+      <div className="flex items-center gap-2 text-sm font-bold mb-3">
+        <span>{s.emoji}</span><span className="text-fg">{s.label}</span>
       </div>
-      <div className="space-y-2 text-sm text-slate-300 leading-relaxed">
+      <div className="space-y-1.5 text-sm text-muted leading-snug">
         {lines.map((line, i) => <p key={i}>{line}</p>)}
       </div>
     </section>
@@ -790,32 +783,32 @@ function Layer2Section({ report, summary }: { report: Layer2Report; summary: Rep
   const showConfusionCaveat = report.confusedPairs.length > 0 && simTotal > 0 && simPassed === simTotal;
 
   return (
-    <section className="space-y-10">
+    <section className="space-y-6">
       <VerdictBanner summary={summary} />
 
       <SectionHeader title="Layer 2 · Behavior Validation" />
 
       {/* Check 1: Clarity */}
       <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">
+        <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2">
           Check 1 · Clarity Analysis
         </h3>
-        <div className="space-y-3">
+        <div className="space-y-2">
           {report.clarity.map(r => <ToolCard key={r.name} result={r} fix={fixByName.get(r.name)} />)}
         </div>
       </div>
 
       {/* Check 2: Confusion */}
       <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">
+        <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2">
           Check 2 · Ambiguity Analysis
         </h3>
         {report.confusedPairs.length === 0 ? (
-          <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 text-emerald-400 text-sm">
+          <div className="bg-surface border border-line border-l-4 border-l-success rounded p-3 text-success text-sm">
             ✓ No confused tool pairs detected.
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {report.confusedPairs.map((pair, i) => <ConfusionRow key={i} pair={pair} />)}
           </div>
         )}
@@ -823,27 +816,27 @@ function Layer2Section({ report, summary }: { report: Layer2Report; summary: Rep
 
       {/* Check 3: Simulation */}
       <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-3">
+        <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-3">
           Check 3 · Compatibility Testing
-          <span className={`normal-case text-sm font-bold ${
-            simPassed === simTotal ? 'text-emerald-400' :
-            simPassed >= Math.ceil(simTotal / 2) ? 'text-amber-400' :
-            'text-red-400'
+          <span className={`normal-case text-xs font-mono font-bold ${
+            simPassed === simTotal ? 'text-success' :
+            simPassed >= Math.ceil(simTotal / 2) ? 'text-warning' :
+            'text-critical'
           }`}>
             {simPassed}/{simTotal} passed
           </span>
         </h3>
-        <p className="text-xs text-slate-600 mb-4 normal-case">
+        <p className="text-[11px] text-muted mb-2 normal-case">
           Agent simulation run at fixed temperature for reproducible results.
         </p>
         {showConfusionCaveat && (
-          <p className="text-xs text-slate-500 leading-relaxed mb-4 normal-case">
+          <p className="text-[11px] text-muted leading-snug mb-2 normal-case">
             {simPassed}/{simTotal} passed on this run — confusion risk flagged above may surface on
             different user phrasings. Scenario simulation is one sample; confusion detection identifies
             structural risk regardless of this run&rsquo;s outcome.
           </p>
         )}
-        <div className="space-y-3">
+        <div className="space-y-2">
           {report.simulation.map((sim, i) => <SimulationRow key={i} sim={sim} index={i} />)}
         </div>
       </div>
@@ -936,38 +929,38 @@ function ResultsContent() {
   const summary = summaryReady && layer1 ? computeReportSummary(layer1, layer2) : null;
 
   return (
-    <div className="min-h-screen bg-slate-950">
+    <div className="min-h-screen bg-canvas">
       {/* Top bar */}
-      <header className="border-b border-slate-800 px-4 py-3 flex items-center gap-4">
+      <header className="border-b border-line px-4 py-2.5 flex items-center gap-3">
         <Link href="/"
-          className="text-slate-400 hover:text-slate-100 transition-colors text-sm flex items-center gap-1">
+          className="text-muted hover:text-fg transition-colors text-xs flex items-center gap-1">
           ← Back
         </Link>
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs text-slate-500">Checking</span>
-          <span className="font-mono text-sm text-blue-400 truncate">{hostname}</span>
+          <span className="text-[11px] text-muted">Checking</span>
+          <span className="font-mono text-xs text-suggestion truncate">{hostname}</span>
         </div>
       </header>
 
       {summary && <StickySummaryBar summary={summary} />}
 
-      <main className="max-w-2xl mx-auto px-4 py-10 space-y-12">
+      <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
         {/* Executive summary dashboard — leads the whole report */}
         {summary && <ExecutiveSummary summary={summary} />}
 
         {/* Server info + Layer 1 are grouped tightly — the info line is Layer 1's intro, not its own section */}
-        <div className="space-y-4">
+        <div className="space-y-3">
           {layer1 && !layer1Loading && (
-            <div className="flex items-center gap-3 text-sm">
-              <span className="w-2 h-2 bg-emerald-400 rounded-full flex-shrink-0" />
+            <div className="flex items-center gap-2 text-xs">
+              <span className="w-1.5 h-1.5 bg-success rounded-full flex-shrink-0" />
               {layer1.serverName ? (
-                <span className="text-slate-300">
-                  <span className="font-semibold">{layer1.serverName}</span>
-                  {layer1.serverVersion && <span className="text-slate-500"> v{layer1.serverVersion}</span>}
-                  <span className="text-slate-500"> · {layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''}</span>
+                <span className="text-fg/80">
+                  <span className="font-semibold text-fg">{layer1.serverName}</span>
+                  {layer1.serverVersion && <span className="text-muted"> v{layer1.serverVersion}</span>}
+                  <span className="text-muted"> · {layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''}</span>
                 </span>
               ) : (
-                <span className="text-slate-400">{layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''} found</span>
+                <span className="text-muted">{layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''} found</span>
               )}
             </div>
           )}
@@ -981,7 +974,7 @@ function ResultsContent() {
 
         {/* Layer 2 */}
         {layer2Loading && (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <div className="bg-surface border border-line rounded p-3">
             <Spinner label="Running behavior validation (Layer 2)… this may take up to 30 s" />
           </div>
         )}
@@ -995,9 +988,9 @@ function ResultsContent() {
 
         {/* Check another */}
         {!layer1Loading && (
-          <div className="pt-4 border-t border-slate-800">
+          <div className="pt-3 border-t border-line">
             <Link href="/"
-              className="text-sm text-slate-400 hover:text-slate-100 transition-colors">
+              className="text-xs text-muted hover:text-fg transition-colors">
               ← Check another server
             </Link>
           </div>
@@ -1010,7 +1003,7 @@ function ResultsContent() {
 export default function ResultsPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
         <Spinner label="Loading…" />
       </div>
     }>
