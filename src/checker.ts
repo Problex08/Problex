@@ -149,11 +149,12 @@ interface SuggestedFix {
 }
 
 interface Layer2Verdict {
-  readyTools:      number;
-  totalTools:      number;
-  scenariosFailed: number;
-  issuesCount:     number;
-  shipReady:       boolean;
+  readyTools:         number;
+  totalTools:         number;
+  scenariosFailed:    number; // scenarios where the agent picked the wrong tool
+  schemaFailureCount: number; // Layer 1 protocol schemas that failed validation
+  issuesCount:        number;
+  shipReady:          boolean;
 }
 
 const CLARITY_FIX_THRESHOLD = 7;
@@ -372,23 +373,48 @@ function validateArgsAgainstSchema(
   const result = jsonSchemaToZod(inputSchema).safeParse(args);
   if (result.success) return { valid: true, issues: [] };
 
-  const issues = result.error.issues.map(issue => {
+  const missing: string[] = [];
+  const wrongType: Array<{ path: string; expected: string }> = [];
+  const unrecognized: string[] = [];
+
+  for (const issue of result.error.issues) {
     const path = issue.path.length ? issue.path.map(String).join('.') : '(root)';
-
     if (issue.code === 'unrecognized_keys') {
-      const keys = issue.keys.map(k => `'${k}'`).join(', ');
-      return `Unexpected field${issue.keys.length > 1 ? 's' : ''} ${keys} — not defined in the tool's schema.`;
+      unrecognized.push(...issue.keys);
+    } else if (issue.code === 'invalid_type') {
+      if (issue.message.includes('received undefined')) missing.push(path);
+      else wrongType.push({ path, expected: issue.expected });
     }
-    if (issue.code === 'invalid_type') {
-      if (issue.message.includes('received undefined')) {
-        return `Missing required field '${path}' — the schema requires it but no value was provided.`;
-      }
-      return `Field '${path}' has the wrong type — expected ${issue.expected}.`;
-    }
-    return `'${path}': ${issue.message}`;
-  });
+  }
 
-  return { valid: false, issues };
+  const messages: string[] = [];
+
+  // A required field missing alongside an unrecognized key in the same call is
+  // almost always the same mistake — the agent used the wrong field name.
+  // Surface both halves together instead of reporting only "missing field" and
+  // silently dropping which (wrong) name the agent actually used.
+  const renamedPairCount = Math.min(missing.length, unrecognized.length);
+  for (let i = 0; i < renamedPairCount; i++) {
+    messages.push(
+      `Used '${unrecognized[i]}' instead of the required field '${missing[i]}' — ` +
+      `'${unrecognized[i]}' isn't a recognized field for this tool.`,
+    );
+  }
+  const leftoverMissing = missing.slice(renamedPairCount);
+  const leftoverUnrecognized = unrecognized.slice(renamedPairCount);
+
+  if (leftoverUnrecognized.length > 0) {
+    const keys = leftoverUnrecognized.map(k => `'${k}'`).join(', ');
+    messages.push(`Unrecognized field${leftoverUnrecognized.length > 1 ? 's' : ''} ${keys} — not in schema.`);
+  }
+  for (const path of leftoverMissing) {
+    messages.push(`Missing required field '${path}' — the schema requires it but no value was provided.`);
+  }
+  for (const { path, expected } of wrongType) {
+    messages.push(`Field '${path}' has the wrong type — expected ${expected}.`);
+  }
+
+  return { valid: false, issues: messages };
 }
 
 // ─── Layer 2: Check 1 — Description Clarity ──────────────────────────────────
@@ -725,6 +751,7 @@ function computeVerdict(
   tools: McpTool[],
   simulation: SimulationResult[],
   suggestedFixes: SuggestedFix[],
+  schemaFailureCount: number,
 ): Layer2Verdict {
   const totalTools = tools.length;
   const scenariosFailed = simulation.filter(s => !s.correct).length;
@@ -740,14 +767,15 @@ function computeVerdict(
     readyTools: totalTools - toolsWithIssues.size,
     totalTools,
     scenariosFailed,
+    schemaFailureCount,
     issuesCount,
-    shipReady: issuesCount === 0 && scenariosFailed === 0,
+    shipReady: issuesCount === 0 && scenariosFailed === 0 && schemaFailureCount === 0,
   };
 }
 
 // ─── Layer 2: orchestrator ────────────────────────────────────────────────────
 
-async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<void> {
+async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic, schemaFailureCount: number): Promise<void> {
   console.log();
   divider('═');
   console.log(`${BOLD}  Layer 2 — Behavior Validation${RESET}  ${DIM}(claude-haiku-4-5)${RESET}`);
@@ -797,20 +825,30 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
   }
   const fixByName = new Map(fixes.map(f => [f.name, f]));
 
-  const verdict = computeVerdict(tools, sims, fixes);
+  const verdict = computeVerdict(tools, sims, fixes, schemaFailureCount);
 
   // ── Overall verdict ───────────────────────────────────────────────────────
+  // Schema failures and scenario failures are reported separately — never claim
+  // "failed protocol schemas" when Layer 1 passed every tool, and vice versa.
   console.log();
   if (verdict.shipReady) {
     console.log(`  ${GREEN}${BOLD}✓ Server ready to ship${RESET}\n`);
   } else {
     const issueWord = verdict.issuesCount === 1 ? 'issue' : 'issues';
-    const scenarioWord = verdict.scenariosFailed === 1 ? 'scenario' : 'scenarios';
+
+    const criticalParts: string[] = [];
+    if (verdict.schemaFailureCount > 0) {
+      criticalParts.push(`${verdict.schemaFailureCount} failed protocol schema${verdict.schemaFailureCount === 1 ? '' : 's'}`);
+    }
+    if (verdict.scenariosFailed > 0) {
+      criticalParts.push(`${verdict.scenariosFailed} scenario${verdict.scenariosFailed === 1 ? '' : 's'} where the agent picked the wrong tool`);
+    }
+
     console.log(`  ${YELLOW}${BOLD}${verdict.issuesCount} ${issueWord} found before shipping${RESET}`);
     console.log(
-      `  ${DIM}${verdict.readyTools}/${verdict.totalTools} tools ready to ship · ` +
-      `${verdict.scenariosFailed} ${scenarioWord} failed · ` +
-      `${verdict.issuesCount} ${issueWord} need fixing${RESET}\n`,
+      `  ${DIM}${verdict.readyTools}/${verdict.totalTools} tools ready to ship` +
+      (criticalParts.length > 0 ? ` · ${criticalParts.join(' and ')}` : '') +
+      ` · ${verdict.issuesCount} ${issueWord} need fixing${RESET}\n`,
     );
   }
 
@@ -1026,7 +1064,7 @@ async function checkServer(url: string, runAi: boolean): Promise<void> {
 
     // ── Layer 2 (optional) ────────────────────────────────────────────────────
     if (runAi && anthropic) {
-      await runLayer2Checks(tools as McpTool[], anthropic);
+      await runLayer2Checks(tools as McpTool[], anthropic, failed);
     }
 
   } catch (err) {
