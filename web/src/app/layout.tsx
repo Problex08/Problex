@@ -5,8 +5,8 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'MCP Server Checker',
-  description: 'Validate MCP server protocol conformance and agent compatibility',
+  title: 'Problex',
+  description: 'Validate your MCP server before you ship — protocol conformance, tool clarity, and agent compatibility, in one report.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

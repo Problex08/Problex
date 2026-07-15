@@ -25,7 +25,7 @@ function HomeContent() {
     <main className="min-h-screen bg-canvas flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-md">
         <div className="mb-6">
-          <h1 className="text-lg font-semibold text-fg mb-1">MCP Server Checker</h1>
+          <h1 className="text-lg font-semibold text-fg mb-1">Problex</h1>
           <p className="text-muted text-xs leading-snug">
             Validate your MCP server before you ship. Protocol conformance, tool clarity, and
             agent compatibility — in one report.

@@ -821,6 +821,10 @@ function ProductionVerdict({ summary }: { summary: ReportSummary }) {
       <div className="space-y-1.5 text-sm text-muted leading-snug">
         {lines.map((line, i) => <p key={i}>{line}</p>)}
       </div>
+      <p className="mt-3 pt-2 border-t border-line text-[11px] text-muted/70 leading-snug">
+        &ldquo;Ready for Production&rdquo; means: schema valid and tested model correctly selected the right tool
+        across generated scenarios. Not exhaustive testing across all models or all user phrasings.
+      </p>
     </section>
   );
 }

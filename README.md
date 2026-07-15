@@ -1,197 +1,100 @@
-# MCP Checker
+# Problex
 
-Validate your MCP server before you ship.
+> Validate your MCP server before you ship.
 
-## The problem
-
-MCP servers expose tools to agents through nothing but a name, a description, and a JSON Schema. There's no compiler, no type system, no test suite that catches "this description is ambiguous enough that an agent will call the wrong tool 30% of the time." The server passes every schema validator you throw at it — and still fails in production, silently, because an agent picked `list_files` when it meant `search_files`.
-
-Existing tools stop at structural validation: does `inputSchema` conform to JSON Schema, are required fields present, does the server respond to `tools/list`. That tells you the server is *well-formed*. It tells you nothing about whether the server is *usable* — whether an agent reading these tool descriptions in a real conversation can reliably tell them apart and call them correctly.
-
-## What makes it different
-
-- **Zero setup.** No config files, no hand-written test cases. Paste a URL, get a full validation report.
-- **Compatibility testing, not just linting.** Realistic request scenarios are generated from your actual tool set, an agent picks a tool for each one independently, and the pick is checked against the correct answer — including scenarios specifically engineered to probe any tool pairs flagged as ambiguous.
-- **Two layers, one run.** Protocol validation and behavior validation happen in the same pass, so you see both "is this schema valid" and "will an agent actually call it correctly" side by side.
-
-## Quick start
-
-Requires Node 18+.
-
-```bash
-git clone <repo-url>
-cd mcp-checker
-npm install
-
-# Layer 1 only — protocol validation, no API key needed
-npm run check https://mcp.deepwiki.com/mcp
-
-# Layer 1 + Layer 2 — adds behavior validation (needs ANTHROPIC_API_KEY)
-npm run check https://mcp.deepwiki.com/mcp -- --ai
-```
-
-Set `ANTHROPIC_API_KEY` in a `.env` file at the project root, or export it in your shell, to enable `--ai`.
-
-```bash
-npm run build   # compile to dist/
-```
-
-## Web app
-
-The web app is a hosted, zero-install version of the same checks: paste an MCP server URL, get a report in the browser. No account, no CLI, no API key of your own — just point it at a public MCP server.
-
-**https://web-mu-two-87.vercel.app**
-
-Layer 1 runs for free with no limits beyond IP-based rate limiting (10 checks/hour). Layer 2 runs on the same request when you toggle it on.
-
-## Example output
-
-Running against a real MCP server with 3 tools:
+This is what Problex found on DeepWiki's live MCP server:
 
 ```
-══════════════════════════════════════════════════════════
-  MCP Server Checker
-  Target: https://mcp.deepwiki.com/mcp
-══════════════════════════════════════════════════════════
-
-  Connecting… connected
-  Server: deepwiki v2.14.3
-  Fetching tools… 3 found
-
-  ──────────────────────────────────────────────────────────
-
-  [1/3] read_wiki_structure
-       Desc:   Get a list of documentation topics for a GitHub repository
-       Schema: ✓ PASSED
-
-  [2/3] read_wiki_contents
-       Desc:   View documentation about a GitHub repository
-       Schema: ✓ PASSED
-
-  [3/3] ask_question
-       Desc:   Ask any question about a GitHub repository
-       Schema: ✓ PASSED
-
-  ──────────────────────────────────────────────────────────
-
-  Layer 1 Summary: 3 tools — 3 passed, 0 failed
-══════════════════════════════════════════════════════════
-
-══════════════════════════════════════════════════════════
-  Layer 2 — Behavior Validation  (claude-haiku-4-5)
-══════════════════════════════════════════════════════════
-
-  3 issues found before shipping
-  1/3 tools ready to ship · 2 scenarios failed · 3 issues need fixing
-
-  CHECK 1 · CLARITY ANALYSIS
-
-  [1/3] read_wiki_structure
-       Clarity: 7/10  — Missing description of what the returned list
-       contains or how many topics are included by default.
+CHECK 1 · CLARITY ANALYSIS
 
   [2/3] read_wiki_contents
        Clarity: 5/10  — Fails to specify which documentation page is
        returned or whether an agent must pass a topic name to retrieve
        specific content.
-       Recommended fix: Retrieve the complete documentation content for a
-       GitHub repository. Use this to read full wiki contents after
-       identifying topics with read_wiki_structure — this returns actual
-       content, not a list of topics.
-       Triggered by Scenario 2 — agent picked read_wiki_structure instead
-       of this tool.
 
-  [3/3] ask_question
-       Clarity: 8/10  — Clear dual-format input and max repository count
-       are well-defined; lacks detail on response format or length
-       constraints only.
-
-  CHECK 2 · AMBIGUITY ANALYSIS
+CHECK 2 · AMBIGUITY ANALYSIS
 
   ⚠ read_wiki_structure ↔ read_wiki_contents  [HIGH — confirmed by simulation]
     Both require only repoName and both access repository documentation —
     an agent has no signal to distinguish topic-listing from content-retrieval.
     Confirmed by Scenario 2 — agent picked read_wiki_structure instead.
 
-  CHECK 3 · COMPATIBILITY TESTING
-
-  Scenario 1: "I need to see all the available documentation pages for the
-  tensorflow/tensorflow repo, formatted as markdown"
-    Expected: read_wiki_structure  →  Picked: read_wiki_structure  ⚠ PASS (schema violation)
-    Args:     {"repoName":"tensorflow/tensorflow","format":"markdown"}
-    Schema violation (programmatic): Unexpected field 'format' — not defined
-    in the tool's schema.
+CHECK 3 · COMPATIBILITY TESTING
 
   Scenario 2: "Show me the full documentation content for kubernetes/kubernetes.
   I want to read the actual pages"
     Expected: read_wiki_contents  →  Picked: read_wiki_structure  ✗
-    Args:     {"repoName":"kubernetes/kubernetes"}
-
-  Scenario 3: "Can you help me understand the differences between React and Vue?"
-    Expected: ask_question  →  Picked: ask_question  ✓
-    Args:     {"repoName":["facebook/react","vuejs/vue"],"question":"What are
-    the key differences?"}
-
-  Scenario 4: "I'm looking at the docker/cli repository and I want to get an
-  overview of what's documented there"
-    Expected: read_wiki_structure  →  Picked: read_wiki_structure  ⚠ PASS (wrong args)
-    Args:     {"repoName":"example/repo"}
-    Value quality warning (heuristic): repoName is 'example/repo' — a
-    placeholder never mentioned in the user's request for 'docker/cli'.
-
-  Scenario 5: "Pull up the documentation for golang/go. I need to read through
-  their wiki"
-    Expected: read_wiki_contents  →  Picked: read_wiki_structure  ✗
-    Args:     {"repoName":"golang/go"}
-
-  Score: 3/5 passed
-══════════════════════════════════════════════════════════
 ```
 
-Scenarios 2 and 5 are the failures the ambiguity check predicted: the agent had a specific page in mind but picked the topic-listing tool anyway, because nothing in either description said which tool to use once you already know the page you want — that's what promotes the confusion pair to HIGH. Scenarios 1 and 4 both pick the right tool but still get flagged, for two different reasons that are checked two different ways: Scenario 1's `format` field doesn't exist anywhere in the tool's schema — that's caught by running the arguments through a Zod schema compiled from the tool's actual `inputSchema`, a deterministic check with no model involved. Scenario 4's `repoName` is a well-typed, schema-valid string that just happens to be a placeholder no one asked for — catching that requires judgment, so it's the one case here that goes through Claude.
+A real, publicly hosted MCP server. Its schemas all validate — every structural check passes. But two of its three tools describe the same thing well enough that an agent reliably picks the wrong one, and Problex's scenario simulation caught the exact failure the ambiguity check predicted. No hand-written test case found this. It was generated, run, and confirmed automatically.
+
+## What it is
+
+Problex checks whether an agent can actually use your MCP server correctly, not just whether its schemas parse. MCP servers expose tools to agents through nothing but a name, a description, and a JSON Schema — there's no compiler and no test suite that catches "this description is ambiguous enough that an agent will call the wrong tool 30% of the time." A server can pass every structural validator you throw at it and still fail in production, silently, because an agent picked `list_files` when it meant `search_files`. That's a reasoning failure, not a schema failure, and existing tools don't look for it. Problex does: it scores tool description clarity, flags ambiguous tool pairs, and then simulates real agent behavior against generated scenarios to confirm whether the confusion it predicted actually happens.
+
+> ⚠ Known limitation: Behavior testing currently runs against a single model (Claude). A passing report means "verified for Claude-based agents" — not verified for all agents. A tool description that confuses Claude may not confuse GPT or Gemini, and vice versa. Multi-model testing is on the roadmap.
+
+## How it's different
+
+Tools like `mcp-evals`, `alpic-ai/mcp-eval`, and `lastmile-ai/mcp-eval` all require you to hand-write test cases before you get any signal — you have to already know what to test for. Problex needs none of that: paste a URL, and it generates realistic request scenarios from your actual tool set, runs them, and reports what broke. Zero setup, zero hand-written test cases.
+
+This checks reasoning-clarity and agent compatibility — not security. MCP Inspector covers protocol-level debugging. Problex completes the workflow after Inspector: use Inspector to debug, use Problex to validate agents can actually use it.
 
 ## How it works
 
-### Layer 1 — Protocol validation
+**Layer 1 — Protocol Validation** *(programmatic)*
+Connects over MCP's Streamable HTTP transport, calls `tools/list`, and validates every tool's `inputSchema` against a full JSON Schema validator built on Zod — correct `properties`, `required`, nested `$ref`/`$defs`, composition keywords, the works. No model involved, no API key required.
 
-Connects to the server over MCP's Streamable HTTP transport, calls `tools/list`, and runs every tool's `inputSchema` through a full JSON Schema validator (built on Zod) that checks it's a well-formed `type: "object"` schema per the MCP spec — correct `properties`, `required`, nested `$ref`/`$defs`, composition keywords (`anyOf`/`oneOf`/`allOf`), the works. This is pure structural validation: no network calls beyond the MCP connection itself, no API key required, runs in milliseconds per tool.
+**Layer 2 — Behavior Validation** *(automated)*
+- **Clarity Analysis** — scores each tool's description 1–10 and states the specific problem, not a vague "could be clearer."
+- **Ambiguity Analysis** — compares every pair of tools and flags pairs whose descriptions overlap enough that an agent has no reliable signal to pick between them, ranked HIGH when a scenario confirms the mix-up and LOW when it's only structural resemblance.
+- **Compatibility Testing** — auto-generates realistic user requests from your tool set (more scenarios for servers with more tools or more flagged ambiguous pairs), then has an agent pick a tool for each request independently, blind to which tool was "expected." Zero hand-written test cases at any point.
+- Argument validation is fully programmatic (Zod-based, zero LLM cost) — a tool's `inputSchema` is compiled into a Zod schema and picked arguments are validated against it deterministically.
 
-### Layer 2 — Behavior validation (`--ai`)
+Argument schema validation is code, not AI. LLM is only used where code cannot — judging description clarity and simulating agent reasoning.
 
-Layer 1 tells you the schema parses. Layer 2 tells you whether an agent can actually use it correctly:
+## Production verdict explanation
 
-1. **Clarity analysis** — scores each tool's description 1–10 and states the specific problem (missing format, ambiguous scope, unclear return value) rather than a vague "could be clearer."
-2. **Ambiguity analysis** — compares every pair of tools and flags pairs whose descriptions overlap enough that an agent has no reliable signal to pick between them, naming the exact overlapping words or parameters. Each flagged pair is then ranked **HIGH** if a compatibility-test scenario actually confirmed the mix-up, or **LOW** if it's only a structural resemblance nothing in simulation triggered — HIGH pairs sort first and cite the exact scenario and wrong pick that confirmed them.
-3. **Compatibility testing** — generates realistic user requests (more scenarios for servers with more tools or more flagged ambiguous pairs) with a known-correct tool, then has an agent pick a tool for each request *independently*, blind to which tool was "expected." Scenarios are deliberately seeded to probe any pairs flagged by the ambiguity check. Tool-picking runs at a fixed, deterministic temperature so results are stable across runs. When the right tool *is* picked, its arguments go through two separate checks, in order: first a **schema violation** check — the tool's actual `inputSchema` is compiled into a Zod schema and the picked arguments are validated against it, catching missing required fields, unrecognized field names, and wrong types with zero LLM calls and zero ambiguity. Only if that passes does a **value quality** check ask Claude whether the argument *values* are actually grounded in the request rather than placeholders or hallucinated. Either one surfaces as a distinct `⚠ PASS (schema violation)` / `⚠ PASS (wrong args)` state rather than folding into a hard pass/fail.
-4. **Recommended fixes** — generated for any tool scoring below 7/10, *and* for any tool that was the correct answer in a failed scenario but wasn't picked, even if its clarity score was fine on paper. Fixes explicitly contrast against an ambiguity partner by name if one exists, and cite the scenario that triggered them when relevant.
-5. **Overall verdict** — a one-line summary computed from the above (`N/M tools ready to ship · X scenarios failed · Y issues need fixing`, or `Server ready to ship` when nothing needs fixing) leads the Layer 2 report before any individual check is shown.
+- **✅ Ready for Production** — no critical issues or warnings found; safe to ship as-is.
+- **⚠ Ready with Minor Improvements** — no critical issues, but warnings (low-clarity descriptions, confirmed ambiguous pairs, or argument-quality issues) should be addressed before scaling usage.
+- **❌ Not Ready** — critical issues found (failed schemas or scenarios where the agent picked the wrong tool) that will misroute real requests; fix before shipping.
 
-Argument-schema validation deliberately isn't a model call: whether a set of arguments matches a JSON Schema is a decidable question, so it's answered by code — same schema, same arguments, same result, every time, for free. Claude is reserved for the parts that genuinely require judgment: clarity, ambiguity, which tool to call, and whether an argument's *value* makes sense — not for something a validator can already answer with certainty.
+> Note: "Ready for Production" means schema valid and the tested model correctly selected tools across generated scenarios. Not exhaustive testing across all models, all possible phrasings, or edge cases outside generated scenarios.
 
-All Claude responses are parsed and validated through Zod schemas before being trusted — a malformed or off-spec response fails loudly instead of corrupting the report.
+## Quick start (CLI)
+
+Requires Node 18+.
+
+```bash
+npm install
+npm run check https://your-server.com/mcp --ai
+```
+
+Layer 1 (protocol validation) needs no API key. Layer 2 (`--ai`) needs `ANTHROPIC_API_KEY` set in a `.env` file at the project root or exported in your shell.
+
+## Web app
+
+Live at **https://problex.dev**
+
+No account required. 10 free checks per hour.
+
+- For private servers: use the Authorization Header field.
+- For stdio servers: use the CLI tool.
 
 ## Tech stack
 
-**CLI** (`src/`)
-- TypeScript, run directly via [`tsx`](https://github.com/privatenumber/tsx) (not `ts-node` — the MCP SDK's extensionless export map needs esbuild's resolver)
+- [`zod`](https://github.com/colinhacks/zod) v4 for programmatic JSON Schema and argument validation
+- [`@anthropic-ai/sdk`](https://github.com/anthropics/anthropic-sdk-typescript), model `claude-haiku-4-5`, for the AI reasoning layer only (clarity, ambiguity, scenario simulation)
 - [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk) for the MCP client / Streamable HTTP transport
-- [`commander`](https://github.com/tj/commander.js) for the CLI surface
-- [`zod`](https://github.com/colinhacks/zod) v4 for JSON Schema validation and for validating structured responses
-- [`@anthropic-ai/sdk`](https://github.com/anthropics/anthropic-sdk-typescript) for Layer 2, model `claude-haiku-4-5`
+- CLI: TypeScript run via [`tsx`](https://github.com/privatenumber/tsx), [`commander`](https://github.com/tj/commander.js) for the CLI surface
+- Web: Next.js 15 (App Router) + React 19, Tailwind CSS, [Upstash Redis](https://upstash.com/) for rate limiting, deployed on Vercel
 
-**Web app** (`web/`)
-- Next.js 15 (App Router) + React 19
-- Tailwind CSS
-- Same Layer 1/Layer 2 logic as the CLI, exposed via `/api/check` and `/api/check-ai` route handlers
-- [Upstash Redis](https://upstash.com/) for IP-based rate limiting
-- Deployed on Vercel
+## Roadmap
+
+- **V2** — Security scanning, check history, performance benchmarking
+- **V3** — GitHub Action / watch mode, multi-model testing, billing
+- **V4** — Enterprise features, badge program
 
 ## Contributing
 
-Issues and PRs welcome. A few things worth knowing before you dig in:
-
-- The root project (`src/checker.ts`) is the CLI; `web/` is a separate Next.js app that reimplements the same Layer 1/Layer 2 logic (`web/src/lib/layer1.ts`, `web/src/lib/layer2.ts`) behind API routes. If you change checker behavior, update both.
-- Layer 2 prompts are deliberately strict about output format (see the `*_RULES` constants in `checker.ts`) to keep verdicts specific instead of hedgy — if you touch those, sanity-check a few real runs, not just the schema.
-- `npm run build` compiles the CLI with `tsc`; there's no build step required for local development (`npm run check` runs directly through `tsx`).
-
-Open a PR against `main`.
+Issues and PRs welcome. The root project (`src/checker.ts`) is the CLI; `web/` is a separate Next.js app that reimplements the same Layer 1/Layer 2 logic (`web/src/lib/layer1.ts`, `web/src/lib/layer2.ts`) behind API routes — if you change checker behavior, update both. Layer 2 prompts are deliberately strict about output format to keep verdicts specific instead of hedgy; if you touch those, sanity-check a few real runs, not just the schema. Open a PR against `main`.
