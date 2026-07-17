@@ -1,40 +1,44 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
+import { Navbar } from '@/components/Navbar';
+import { Footer } from '@/components/Footer';
+import { GITHUB_REPO_URL } from '@/lib/constants';
 
-const GITHUB_REPO_URL = 'https://github.com/jsva2002-cmyk/mcp-checker';
+// ─── Scroll reveal ──────────────────────────────────────────────────────────
+// Lightweight fade + slight upward slide as sections enter the viewport.
+// Plain IntersectionObserver rather than an animation library — this is the
+// only interaction the effect needs, and CSS handles the actual transition.
+// Reveals once and stops observing; sections don't hide again on scroll-away.
 
-// ─── Navbar ─────────────────────────────────────────────────────────────────
+function Reveal({ children, className = '', delayMs = 0 }: {
+  children: React.ReactNode; className?: string; delayMs?: number;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [inView, setInView] = useState(false);
 
-function Navbar() {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setInView(true);
+        observer.disconnect();
+      }
+    }, { threshold: 0.15 });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <header className="border-b border-line">
-      <div className="max-w-6xl mx-auto py-3 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-[10px] pl-6">
-          <Image src="/logo-icon.png" alt="" width={253} height={442} className="h-11 w-auto translate-y-[1px]" priority />
-          <Image src="/logo-wordmark.png" alt="Problex" width={1232} height={203} className="h-[22px] w-auto" priority />
-        </Link>
-        <div className="flex items-center gap-4 pr-6">
-          <a
-            href={GITHUB_REPO_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-muted hover:text-fg transition-colors"
-          >
-            GitHub
-          </a>
-          <Link
-            href="/check"
-            className="px-3 py-1.5 bg-suggestion hover:brightness-110 active:brightness-90
-                       text-canvas font-semibold text-xs rounded transition-[filter] whitespace-nowrap"
-          >
-            Validate Server →
-          </Link>
-        </div>
-      </div>
-    </header>
+    <div
+      ref={ref}
+      className={`transition-all duration-300 ease-out ${inView ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-3'} ${className}`}
+      style={delayMs ? { transitionDelay: `${delayMs}ms` } : undefined}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -42,36 +46,40 @@ function Navbar() {
 
 function Hero() {
   return (
-    <section className="max-w-3xl mx-auto px-6 pt-20 pb-16 text-center">
-      <h1 className="text-3xl sm:text-4xl md:text-[2.75rem] font-bold text-fg tracking-tight leading-tight">
-        Ship MCP servers agents can actually use.
-      </h1>
-      <p className="mt-4 text-sm sm:text-base text-muted max-w-xl mx-auto leading-relaxed">
-        Validate any public MCP server for protocol compliance, tool clarity, compatibility
-        risks, and production readiness. Generate a complete engineering report in seconds.
-      </p>
-      <div className="mt-7 flex items-center justify-center gap-3 flex-wrap">
-        <Link
-          href="/check"
-          className="px-5 py-2.5 bg-suggestion hover:brightness-110 active:brightness-90
-                     text-canvas font-semibold text-sm rounded transition-[filter]"
-        >
-          Validate Server →
-        </Link>
-        <a
-          href={GITHUB_REPO_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="px-5 py-2.5 border border-line hover:border-suggestion/50 text-fg
-                     font-semibold text-sm rounded transition-colors"
-        >
-          View on GitHub →
-        </a>
-      </div>
-      <p className="mt-5 text-[11px] text-muted/70">
-        Free during Beta · No account required · 10 validations per hour · Works with any public MCP server
-      </p>
-    </section>
+    <Reveal>
+      <section className="max-w-3xl mx-auto px-6 pt-20 pb-16 text-center">
+        <h1 className="text-3xl sm:text-4xl md:text-[2.75rem] font-bold text-fg tracking-tight leading-tight">
+          Ship MCP servers agents can actually use.
+        </h1>
+        <p className="mt-4 text-sm sm:text-base text-muted max-w-xl mx-auto leading-relaxed">
+          Validate any public MCP server for protocol compliance, tool clarity, compatibility
+          risks, and production readiness. Generate a complete engineering report in seconds.
+        </p>
+        <div className="mt-7 flex items-center justify-center gap-3 flex-wrap">
+          <Link
+            href="/check"
+            className="px-5 py-2.5 bg-suggestion hover:brightness-110 active:brightness-90
+                       text-canvas font-semibold text-sm rounded transition-all duration-150 ease-out
+                       hover:scale-[1.02] active:scale-[0.98]"
+          >
+            Validate Server →
+          </Link>
+          <a
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-5 py-2.5 border border-line hover:border-suggestion/50 text-fg
+                       font-semibold text-sm rounded transition-all duration-150 ease-out
+                       hover:scale-[1.02] active:scale-[0.98]"
+          >
+            View on GitHub →
+          </a>
+        </div>
+        <p className="mt-5 text-[11px] text-muted/70">
+          Free during Beta · No account required · 10 validations per hour · Works with any public MCP server
+        </p>
+      </section>
+    </Reveal>
   );
 }
 
@@ -198,17 +206,19 @@ function TerminalDemo() {
 
 function WhyItExists() {
   return (
-    <section className="max-w-2xl mx-auto px-6 py-16 text-center space-y-4">
-      <p className="text-fg text-base sm:text-lg leading-relaxed">Most MCP servers technically work.</p>
-      <p className="text-muted text-sm sm:text-base leading-relaxed">
-        The difficult part is making sure AI agents consistently understand your tools, choose
-        the correct one, and behave as intended.
-      </p>
-      <p className="text-muted text-sm sm:text-base leading-relaxed">
-        Small description mistakes become production failures. Problex helps you find those
-        issues before your users do.
-      </p>
-    </section>
+    <Reveal>
+      <section className="max-w-2xl mx-auto px-6 py-16 text-center space-y-4">
+        <p className="text-fg text-base sm:text-lg leading-relaxed">Most MCP servers technically work.</p>
+        <p className="text-muted text-sm sm:text-base leading-relaxed">
+          The difficult part is making sure AI agents consistently understand your tools, choose
+          the correct one, and behave as intended.
+        </p>
+        <p className="text-muted text-sm sm:text-base leading-relaxed">
+          Small description mistakes become production failures. Problex helps you find those
+          issues before your users do.
+        </p>
+      </section>
+    </Reveal>
   );
 }
 
@@ -233,11 +243,13 @@ function Features() {
   return (
     <section className="max-w-5xl mx-auto px-6 py-10">
       <div className="grid sm:grid-cols-3 gap-4">
-        {FEATURES.map(f => (
-          <div key={f.title} className="border border-line rounded-lg p-5 bg-surface">
-            <h3 className="text-fg font-semibold text-sm mb-2">{f.title}</h3>
-            <p className="text-muted text-sm leading-relaxed">{f.desc}</p>
-          </div>
+        {FEATURES.map((f, i) => (
+          <Reveal key={f.title} delayMs={i * 60}>
+            <div className="border border-line rounded-lg p-5 bg-surface">
+              <h3 className="text-fg font-semibold text-sm mb-2">{f.title}</h3>
+              <p className="text-muted text-sm leading-relaxed">{f.desc}</p>
+            </div>
+          </Reveal>
         ))}
       </div>
     </section>
@@ -248,62 +260,64 @@ function Features() {
 
 function ReportExample() {
   return (
-    <section className="max-w-2xl mx-auto px-6 py-16">
-      <h2 className="text-fg text-lg sm:text-xl font-semibold mb-1">Real finding on a live MCP server</h2>
-      <p className="text-muted text-sm mb-6">
-        Unedited excerpt from a Problex report — no synthetic examples.
-      </p>
+    <Reveal>
+      <section className="max-w-2xl mx-auto px-6 py-16">
+        <h2 className="text-fg text-lg sm:text-xl font-semibold mb-1">Real finding on a live MCP server</h2>
+        <p className="text-muted text-sm mb-6">
+          Unedited excerpt from a Problex report — no synthetic examples.
+        </p>
 
-      <div className="bg-surface border border-line rounded-lg p-4 sm:p-5 space-y-4 font-mono text-xs sm:text-[13px]">
-        <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-line">
-          <span className="text-fg">mcp.deepwiki.com <span className="text-muted">· 3 tools</span></span>
-          <span className="text-fg font-bold">89<span className="text-muted font-normal">/100</span></span>
-        </div>
-
-        <div className="border-l-4 border-l-warning bg-canvas border border-line rounded p-3 space-y-2.5">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-warning">⚠</span>
-            <span className="text-fg">read_wiki_contents</span>
-            <span className="text-warning font-bold">5/10</span>
+        <div className="bg-surface border border-line rounded-lg p-4 sm:p-5 space-y-4 font-mono text-xs sm:text-[13px]">
+          <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-line">
+            <span className="text-fg">mcp.deepwiki.com <span className="text-muted">· 3 tools</span></span>
+            <span className="text-fg font-bold">89<span className="text-muted font-normal">/100</span></span>
           </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wide text-muted font-sans">Problem</div>
-            <p className="text-fg/85 leading-snug mt-0.5">
-              Missing the topic or page name parameter — an agent cannot specify which
-              documentation page to read.
+
+          <div className="border-l-4 border-l-warning bg-canvas border border-line rounded p-3 space-y-2.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-warning">⚠</span>
+              <span className="text-fg">read_wiki_contents</span>
+              <span className="text-warning font-bold">5/10</span>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-muted font-sans">Problem</div>
+              <p className="text-fg/85 leading-snug mt-0.5">
+                Missing the topic or page name parameter — an agent cannot specify which
+                documentation page to read.
+              </p>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-muted font-sans">Why this matters</div>
+              <p className="text-muted leading-snug mt-0.5">
+                Ambiguous descriptions raise the risk of wrong tool selection or malformed arguments.
+              </p>
+            </div>
+          </div>
+
+          <div className="border-l-4 border-l-warning bg-canvas border border-line rounded p-3 space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wide text-muted font-sans">Confusion detected</div>
+            <div className="text-fg">read_wiki_structure <span className="text-muted">↔</span> read_wiki_contents</div>
+            <p className="text-muted leading-snug">
+              &ldquo;Both accept only repoName and mention documentation — an agent cannot
+              distinguish between listing topics versus retrieving full content.&rdquo;
             </p>
           </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wide text-muted font-sans">Why this matters</div>
-            <p className="text-muted leading-snug mt-0.5">
-              Ambiguous descriptions raise the risk of wrong tool selection or malformed arguments.
+
+          <div className="border-l-4 border-l-success bg-canvas border border-line rounded p-3 space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wide text-success font-sans">Recommended fix</div>
+            <p className="text-fg/85 leading-snug">
+              &ldquo;Retrieves the full markdown content of a specific documentation page in a
+              GitHub repository. Use this to read a page&rsquo;s complete content after calling
+              read_wiki_structure to find available topic names.&rdquo;
             </p>
           </div>
-        </div>
 
-        <div className="border-l-4 border-l-warning bg-canvas border border-line rounded p-3 space-y-1.5">
-          <div className="text-[10px] uppercase tracking-wide text-muted font-sans">Confusion detected</div>
-          <div className="text-fg">read_wiki_structure <span className="text-muted">↔</span> read_wiki_contents</div>
-          <p className="text-muted leading-snug">
-            &ldquo;Both accept only repoName and mention documentation — an agent cannot
-            distinguish between listing topics versus retrieving full content.&rdquo;
-          </p>
+          <div className="flex items-center gap-2 pt-2 border-t border-line text-warning font-semibold font-sans">
+            <span>⚠</span><span>Ready with Minor Improvements</span>
+          </div>
         </div>
-
-        <div className="border-l-4 border-l-success bg-canvas border border-line rounded p-3 space-y-1.5">
-          <div className="text-[10px] uppercase tracking-wide text-success font-sans">Recommended fix</div>
-          <p className="text-fg/85 leading-snug">
-            &ldquo;Retrieves the full markdown content of a specific documentation page in a
-            GitHub repository. Use this to read a page&rsquo;s complete content after calling
-            read_wiki_structure to find available topic names.&rdquo;
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2 pt-2 border-t border-line text-warning font-semibold font-sans">
-          <span>⚠</span><span>Ready with Minor Improvements</span>
-        </div>
-      </div>
-    </section>
+      </section>
+    </Reveal>
   );
 }
 
@@ -320,11 +334,13 @@ function HowItWorks() {
     <section className="max-w-4xl mx-auto px-6 py-16 border-t border-line">
       <div className="grid sm:grid-cols-3 gap-8 sm:gap-6">
         {STEPS.map((s, i) => (
-          <div key={s.title}>
-            <div className="text-suggestion font-mono text-xs mb-2">0{i + 1}</div>
-            <h3 className="text-fg font-semibold text-sm mb-1.5">{s.title}</h3>
-            <p className="text-muted text-sm leading-relaxed">{s.desc}</p>
-          </div>
+          <Reveal key={s.title} delayMs={i * 60}>
+            <div>
+              <div className="text-suggestion font-mono text-xs mb-2">0{i + 1}</div>
+              <h3 className="text-fg font-semibold text-sm mb-1.5">{s.title}</h3>
+              <p className="text-muted text-sm leading-relaxed">{s.desc}</p>
+            </div>
+          </Reveal>
         ))}
       </div>
     </section>
@@ -335,45 +351,26 @@ function HowItWorks() {
 
 function FinalCta() {
   return (
-    <section className="border-t border-line">
-      <div className="max-w-2xl mx-auto px-6 py-16 text-center">
-        <h2 className="text-fg text-xl sm:text-2xl font-semibold mb-6">
-          Ready to validate your MCP server?
-        </h2>
-        <Link
-          href="/check"
-          className="inline-block px-6 py-3 bg-suggestion hover:brightness-110 active:brightness-90
-                     text-canvas font-semibold text-sm rounded transition-[filter]"
-        >
-          Validate Server →
-        </Link>
-        <p className="mt-4 text-[11px] text-muted/70">
-          Free during Beta · No account required · 10 validations per hour
-        </p>
-      </div>
-    </section>
-  );
-}
-
-// ─── Footer ─────────────────────────────────────────────────────────────────
-
-function Footer() {
-  return (
-    <footer className="border-t border-line">
-      <div className="max-w-5xl mx-auto px-6 py-6 flex items-center justify-between flex-wrap gap-3">
-        <span className="text-fg font-mono text-sm font-semibold">Problex</span>
-        <div className="flex items-center gap-4 text-xs text-muted">
-          <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer" className="hover:text-fg transition-colors">
-            GitHub
-          </a>
-          <span className="text-line">·</span>
-          <span>Privacy</span>
-          <span className="text-line">·</span>
-          <span>Terms</span>
+    <Reveal>
+      <section className="border-t border-line">
+        <div className="max-w-2xl mx-auto px-6 py-16 text-center">
+          <h2 className="text-fg text-xl sm:text-2xl font-semibold mb-6">
+            Ready to validate your MCP server?
+          </h2>
+          <Link
+            href="/check"
+            className="inline-block px-6 py-3 bg-suggestion hover:brightness-110 active:brightness-90
+                       text-canvas font-semibold text-sm rounded transition-all duration-150 ease-out
+                       hover:scale-[1.02] active:scale-[0.98]"
+          >
+            Validate Server →
+          </Link>
+          <p className="mt-4 text-[11px] text-muted/70">
+            Free during Beta · No account required · 10 validations per hour
+          </p>
         </div>
-      </div>
-      <div className="max-w-5xl mx-auto px-6 pb-6 text-[11px] text-muted/60">© 2026 Problex</div>
-    </footer>
+      </section>
+    </Reveal>
   );
 }
 

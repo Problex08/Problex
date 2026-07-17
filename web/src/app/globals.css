@@ -10,6 +10,51 @@
   animation: term-line-in 150ms ease-out;
 }
 
+/* Report content entrance: gauge/badge, stat cards, and the rest of the
+   Executive Summary each fade + slide up on their own delay (see the
+   inline animationDelay in ExecutiveSummaryTab) so the report stages in
+   over ~400ms instead of appearing all at once. Fires once per report
+   load, not on every tab revisit. */
+@keyframes fade-slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-slide-in {
+  animation: fade-slide-in 220ms ease-out both;
+}
+
+/* Tab panels are always mounted and toggled via display:none/block (see
+   tabPanelClass) rather than conditionally rendered, so switching tabs
+   naturally restarts this fade every time a panel becomes visible again —
+   exactly the "quick fade instead of a hard cut" effect we want here,
+   unlike fade-slide-in above which should only ever play once. */
+@keyframes tab-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.tab-fade-in {
+  animation: tab-fade-in 150ms ease-out;
+}
+
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #30363d #0d1117;
+}
+.thin-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 3px;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: #3f4854;
+}
+
 @media print {
   .print-hide {
     display: none !important;

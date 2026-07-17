@@ -72,16 +72,6 @@ function ErrorBox({ message, defaultHeader }: { message: string; defaultHeader: 
   );
 }
 
-function SectionHeader({ title, badge }: { title: string; badge?: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-2.5 mb-3">
-      <h2 className="text-[11px] font-semibold text-muted tracking-wider uppercase">{title}</h2>
-      {badge}
-      <div className="flex-1 h-px bg-line" />
-    </div>
-  );
-}
-
 // ─── Severity ─────────────────────────────────────────────────────────────────
 
 const SEVERITY_STYLE: Record<Severity, { emoji: string; label: string; cls: string }> = {
@@ -109,8 +99,17 @@ const SEVERITY_ACCENT: Record<Severity | 'ok', string> = {
   ok:         'border-l-success',
 };
 
-// Wrong tool picked, or a protocol schema that doesn't validate — an agent
-// calling this in production gets a wrong result or a hard error.
+// Warning/Critical always get the full-weight 4px colored stripe so they read
+// instantly across every card type. Suggestion is intentionally lighter-weight
+// (thin, uncolored) so it doesn't compete visually with things that need
+// attention — it's a lower tier, not a broken/missing card.
+function cardAccentClass(severity: Severity | null): string {
+  if (severity === 'critical') return `border-l-4 ${SEVERITY_ACCENT.critical}`;
+  if (severity === 'warning') return `border-l-4 ${SEVERITY_ACCENT.warning}`;
+  if (severity === 'suggestion') return 'border-l border-line';
+  return `border-l-4 ${SEVERITY_ACCENT.ok}`;
+}
+
 function schemaSeverity(passed: boolean): Severity | null {
   return passed ? null : 'critical';
 }
@@ -136,9 +135,8 @@ function simulationSeverity(sim: SimulationResult): Severity | null {
 }
 
 // ─── Report-level summary ──────────────────────────────────────────────────────
-// Single source of truth for the executive summary, the Layer 2 verdict banner,
-// and the production verdict at the bottom — all three read from this so the
-// numbers never drift from each other.
+// Single source of truth for the executive summary, the tab badges, and the
+// production verdict — all three read from this so the numbers never drift.
 
 interface ReportSummary {
   protocolPassed: number;
@@ -226,19 +224,253 @@ function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null)
   };
 }
 
-// ─── Layer 1 display ──────────────────────────────────────────────────────────
+// 3-4 sentence explanation of exactly why the production verdict landed where it
+// did — built from the same counts shown above it, not a separate judgment call.
+function verdictExplanation(summary: ReportSummary): string[] {
+  const lines: string[] = [];
 
-// Collapsed: index + name + PASS/FAIL badge on one line. Expanded: title,
-// description, schema errors. Failed tools expand by default; passed tools
-// collapse so a clean report scans in seconds.
+  const isPerfect = summary.layer2Ran &&
+    summary.criticalCount === 0 && summary.warningCount === 0 && summary.suggestionCount === 0;
+  if (isPerfect) {
+    return ['Excellent MCP implementation — no issues detected. Ready for production.'];
+  }
+
+  if (summary.productionStatus === 'ready') {
+    const protocolClause = `All ${summary.protocolTotal} protocol check${summary.protocolTotal === 1 ? '' : 's'} passed`;
+    const compatClause = !summary.layer2Ran
+      ? 'compatibility testing was not run'
+      : summary.compatibilityTotal === 0
+      ? 'no compatibility scenarios were generated'
+      : `the agent picked the correct tool in ${summary.compatibilityPassed}/${summary.compatibilityTotal} compatibility scenarios`;
+    lines.push(`${protocolClause}, and ${compatClause}.`);
+    if (summary.clarityAverage !== null) {
+      lines.push(`Clarity scores average ${summary.clarityAverage.toFixed(1)}/10 with no confirmed ambiguous tool pairs.`);
+    }
+    lines.push('No critical issues or warnings were found in this run — this server is safe to ship as-is.');
+    return lines;
+  }
+
+  if (summary.productionStatus === 'minor') {
+    const compatClause = summary.compatibilityTotal === 0
+      ? 'no compatibility scenarios were generated'
+      : `${summary.compatibilityPassed}/${summary.compatibilityTotal} compatibility scenarios correct`;
+    lines.push(
+      `Protocol validation and tool selection are solid: ${summary.protocolPassed}/${summary.protocolTotal} schemas valid, ${compatClause}.`,
+    );
+    lines.push(
+      `${summary.warningCount} warning${summary.warningCount === 1 ? '' : 's'} — low-clarity descriptions, confirmed ambiguous ` +
+      `tool pairs, or argument-quality issues — should be addressed before scaling usage.`,
+    );
+    lines.push('None of these block shipping today, but they are the most likely source of an agent picking the wrong tool under different phrasing.');
+    return lines;
+  }
+
+  const criticalParts: string[] = [];
+  if (summary.schemaFailureCount > 0) {
+    criticalParts.push(`${summary.schemaFailureCount} failed protocol schema${summary.schemaFailureCount === 1 ? '' : 's'}`);
+  }
+  if (summary.scenarioFailureCount > 0) {
+    criticalParts.push(`${summary.scenarioFailureCount} scenario${summary.scenarioFailureCount === 1 ? '' : 's'} where the agent picked the wrong tool`);
+  }
+  lines.push(
+    `${summary.criticalCount} critical issue${summary.criticalCount === 1 ? '' : 's'} — ${criticalParts.join(' and ')} — ` +
+    `mean this server will misroute real requests.`,
+  );
+  const notReadyCompatClause = !summary.layer2Ran
+    ? 'compatibility testing was not run'
+    : summary.compatibilityTotal === 0
+    ? 'no compatibility scenarios were generated'
+    : `${summary.compatibilityPassed}/${summary.compatibilityTotal} compatibility scenarios were handled correctly`;
+  lines.push(
+    `${summary.protocolPassed}/${summary.protocolTotal} protocol checks passed and ${notReadyCompatClause}.`,
+  );
+  if (summary.warningCount > 0) {
+    lines.push(`${summary.warningCount} additional warning${summary.warningCount === 1 ? '' : 's'} should be fixed once the critical issues are resolved.`);
+  }
+  lines.push('Fix the critical issues above before shipping this server.');
+  return lines;
+}
+
+function execSummaryLine(summary: ReportSummary): string {
+  if (summary.criticalCount === 0 && summary.warningCount === 0 && summary.suggestionCount === 0) {
+    return 'All protocol validation checks passed with no issues detected.';
+  }
+  if (summary.criticalCount > 0) {
+    return `${summary.criticalCount} critical issue${summary.criticalCount === 1 ? '' : 's'} need${summary.criticalCount === 1 ? 's' : ''} to be fixed before this server is production-ready.`;
+  }
+  if (summary.warningCount > 0) {
+    return `No critical issues — ${summary.warningCount} warning${summary.warningCount === 1 ? '' : 's'} worth addressing before scaling usage.`;
+  }
+  return `${summary.suggestionCount} minor suggestion${summary.suggestionCount === 1 ? '' : 's'} for improvement — nothing blocking.`;
+}
+
+function formatDuration(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s % 60);
+  return `${m}m ${rem}s`;
+}
+
+// ─── Shared building blocks ─────────────────────────────────────────────────
+
+function Callout({ tone, title, children }: { tone: 'info' | 'warning' | 'success'; title?: string; children: React.ReactNode }) {
+  const cls =
+    tone === 'info' ? 'border-suggestion/30 bg-suggestion/5' :
+    tone === 'warning' ? 'border-warning/30 bg-warning/5' :
+    'border-success/30 bg-success/5';
+  const titleCls = tone === 'info' ? 'text-suggestion' : tone === 'warning' ? 'text-warning' : 'text-success';
+  return (
+    <div className={`border rounded p-3 ${cls}`}>
+      {title && <div className={`text-[11px] font-semibold uppercase tracking-wide mb-1 ${titleCls}`}>{title}</div>}
+      <p className="text-xs text-fg/80 leading-snug">{children}</p>
+    </div>
+  );
+}
+
+function CountBadge({ label, count, tone }: { label: string; count: number; tone: 'critical' | 'warning' | 'suggestion' }) {
+  const cls =
+    tone === 'critical' ? 'text-critical border-critical/30 bg-critical/5' :
+    tone === 'warning' ? 'text-warning border-warning/30 bg-warning/5' :
+    'text-suggestion border-suggestion/30 bg-suggestion/5';
+  return (
+    <div className={`border rounded p-2.5 text-center ${cls}`}>
+      <div className="text-lg font-mono font-bold leading-none">{count}</div>
+      <div className="text-[10px] uppercase tracking-wide text-muted mt-1">{label}</div>
+    </div>
+  );
+}
+
+function HealthGauge({ score, status }: { score: number; status: ReportSummary['productionStatus'] }) {
+  const radius = 42;
+  const circumference = 2 * Math.PI * radius;
+  const pct = Math.max(0, Math.min(100, score));
+  const offset = circumference * (1 - pct / 100);
+  // Color must always agree with the production status badge next to it — a
+  // high score with a critical issue (e.g. one failed schema) is still Not
+  // Ready, so the gauge reads red even though the number itself is high.
+  const colorCls = status === 'ready' ? 'text-success' : status === 'minor' ? 'text-warning' : 'text-critical';
+  return (
+    <div className="relative w-24 h-24 flex-shrink-0">
+      <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
+        <circle cx="50" cy="50" r={radius} fill="none" stroke="currentColor" strokeWidth="8" className="text-line" />
+        <circle cx="50" cy="50" r={radius} fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"
+          strokeDasharray={circumference} strokeDashoffset={offset} className={colorCls} />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-xl font-mono font-bold text-fg leading-none">{score}</span>
+        <span className="text-[9px] uppercase tracking-wide mt-1 text-muted">/ 100</span>
+      </div>
+    </div>
+  );
+}
+
+function LayerStatCard({ label, value, fraction, tone, split }: {
+  label: string; value: string; fraction: number; tone: 'good' | 'bad' | 'neutral'; split?: boolean;
+}) {
+  const valueCls = tone === 'good' ? 'text-success' : tone === 'bad' ? 'text-critical' : 'text-fg';
+  const barCls = tone === 'good' ? 'bg-success' : tone === 'bad' ? 'bg-critical' : 'bg-warning';
+  const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+  return (
+    <div className="bg-surface border border-line rounded p-3">
+      <div className="text-[10px] text-muted uppercase tracking-wide mb-1">{label}</div>
+      <div className={`text-xs font-mono font-semibold ${valueCls}`}>{value}</div>
+      {split ? (
+        // Pass/fail ratio, not a quality score — show the failed portion in
+        // red rather than implying quality via a single graded tone.
+        <div className="h-1 bg-line mt-2 overflow-hidden flex">
+          <div className="bg-success h-full" style={{ width: `${pct}%` }} />
+          <div className="bg-critical h-full" style={{ width: `${100 - pct}%` }} />
+        </div>
+      ) : (
+        <div className="h-1 bg-line mt-2 overflow-hidden">
+          <div className={barCls} style={{ width: `${pct}%`, height: '100%' }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const PRODUCTION_STATUS_STYLE: Record<ReportSummary['productionStatus'], { emoji: string; label: string; cls: string }> = {
+  ready:      { emoji: '✅', label: 'Ready for Production',            cls: 'text-success bg-success/10 border-success/30' },
+  minor:      { emoji: '⚠',  label: 'Ready with Minor Improvements',   cls: 'text-warning bg-warning/10 border-warning/30' },
+  'not-ready':{ emoji: '❌', label: 'Not Ready',                       cls: 'text-critical bg-critical/10 border-critical/30' },
+};
+
+function ProductionStatusBadge({ status }: { status: ReportSummary['productionStatus'] }) {
+  const s = PRODUCTION_STATUS_STYLE[status];
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold border ${s.cls}`}>
+      {s.emoji} {s.label}
+    </span>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 py-10 text-center bg-surface border border-line rounded">
+      <span className="w-9 h-9 rounded-full bg-success/10 border border-success/30 text-success flex items-center justify-center text-base">✓</span>
+      <p className="text-sm text-fg/85">{message}</p>
+    </div>
+  );
+}
+
+function LayerSectionHeader({ title, passed, total, description, allExpanded, onToggleAll }: {
+  title: string; passed: number; total: number; description: string; allExpanded: boolean; onToggleAll: () => void;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-2.5 mb-1.5 flex-wrap">
+        <h2 className="text-sm font-semibold text-fg">{title}</h2>
+        <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+          total > 0 && passed === total
+            ? 'bg-success/10 text-success border-success/30'
+            : 'bg-critical/10 text-critical border-critical/30'
+        }`}>
+          {passed}/{total} Passed
+        </span>
+        <div className="flex-1" />
+        {total > 0 && (
+          <button
+            type="button"
+            onClick={onToggleAll}
+            className="text-[10px] px-1.5 py-0.5 rounded border border-line text-muted
+                       hover:text-fg hover:border-suggestion/50 transition-colors font-mono print-hide"
+          >
+            {allExpanded ? 'Collapse All' : 'Expand All'}
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-muted leading-snug">{description}</p>
+    </div>
+  );
+}
+
+// Animates a card's expand/collapse smoothly without measuring content height
+// in JS: a 0fr↔1fr grid row transition clips/reveals the content naturally
+// regardless of how tall it is. `min-h-0` on the inner wrapper is required —
+// grid items default to their content's min-content height otherwise, which
+// would prevent the row from ever fully collapsing to 0.
+function CollapsiblePanel({ expanded, children }: { expanded: boolean; children: React.ReactNode }) {
+  return (
+    <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+      <div className="overflow-hidden min-h-0">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Layer 1 · Protocol card ──────────────────────────────────────────────────
+
 function Layer1ToolRow({ tool, index, total, expanded, onToggle }: {
   tool: ToolSchemaResult; index: number; total: number; expanded: boolean; onToggle: () => void;
 }) {
   const severity = schemaSeverity(tool.schemaPassed);
-  const accent = SEVERITY_ACCENT[severity ?? 'ok'];
+  const accentCls = cardAccentClass(severity);
 
   return (
-    <div className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded overflow-hidden`}>
+    <div className={`${accentCls} bg-surface border-y border-r border-line rounded overflow-hidden`}>
       <button
         type="button"
         onClick={onToggle}
@@ -251,7 +483,7 @@ function Layer1ToolRow({ tool, index, total, expanded, onToggle }: {
         <span className="text-muted text-[10px] flex-shrink-0 select-none font-mono">{expanded ? '−' : '+'}</span>
       </button>
 
-      {expanded && (
+      <CollapsiblePanel expanded={expanded}>
         <div className="px-3 pb-3 border-t border-line pt-2 space-y-1.5">
           {tool.title && tool.title !== tool.name && (
             <div className="text-xs text-muted">{tool.title}</div>
@@ -267,63 +499,13 @@ function Layer1ToolRow({ tool, index, total, expanded, onToggle }: {
             </ul>
           )}
         </div>
-      )}
+      </CollapsiblePanel>
     </div>
   );
 }
 
-function Layer1Section({ report, expandedKeys, onToggle }: {
-  report: Layer1Report; expandedKeys: Set<string>; onToggle: (key: string) => void;
-}) {
-  const passed = report.results.filter(r => r.schemaPassed).length;
-  const failed = report.results.length - passed;
+// ─── Layer 2 · Behavior card ──────────────────────────────────────────────────
 
-  return (
-    <section id="protocol-validation" className="scroll-mt-16 print:break-before-page">
-      <SectionHeader
-        title="Layer 1 · Protocol Validation"
-        badge={
-          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
-            failed === 0
-              ? 'bg-success/10 text-success border-success/30'
-              : 'bg-critical/10 text-critical border-critical/30'
-          }`}>
-            {passed}/{report.results.length} passed
-          </span>
-        }
-      />
-
-      {report.noToolsCapability && (
-        <div className="bg-surface border border-line border-l-4 border-l-warning rounded p-3 text-warning text-sm">
-          This server does not advertise tool support.
-        </div>
-      )}
-
-      <div className="space-y-2">
-        {report.results.map((tool, i) => {
-          const key = `l1:${tool.name}`;
-          return (
-            <Layer1ToolRow
-              key={tool.name}
-              tool={tool}
-              index={i}
-              total={report.results.length}
-              expanded={expandedKeys.has(key)}
-              onToggle={() => onToggle(key)}
-            />
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-// ─── Layer 2 display ──────────────────────────────────────────────────────────
-
-// Problem text: use Claude's own clarity verdict when the fix was triggered by a
-// clarity issue. When it was triggered purely by a scenario failure on an
-// otherwise clear-reading description, there's no "problem" verdict to reuse —
-// state the actual, observed failure instead. One sentence — scan, don't read.
 function problemText(fix: SuggestedFix, clarity?: ClarityResult): string {
   if (fix.reasons.includes('clarity') && clarity) return clarity.verdict;
   if (fix.scenarioContext) {
@@ -332,9 +514,6 @@ function problemText(fix: SuggestedFix, clarity?: ClarityResult): string {
   return clarity?.verdict ?? 'Description needs clarification for reliable tool selection.';
 }
 
-// "Why this matters" is synthesized client-side from data already in the report —
-// no extra model call — because it's just restating what the other checks found
-// in terms of production consequence. One sentence.
 function whyThisMattersText(fix: SuggestedFix): string {
   if (fix.reasons.includes('scenario')) {
     return 'In production, similar requests will silently route to the wrong tool.';
@@ -390,37 +569,57 @@ function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: Clarit
   );
 }
 
-// Collapsible tool card: Tool name → Score + status → (expanded) Problem → Why
-// this matters → Recommended fix → Copy → Triggered scenario. Passed tools
-// collapse by default so a clean report scans in seconds; anything flagged
-// opens automatically so it can't be missed. Expand state is controlled by the
-// parent so "Expand All" / "Collapse All" can drive every card at once.
+// Suggestion-tier clarity results never get a generated fix (the backend only
+// generates one below CLARITY_FIX_THRESHOLD) — so this gives them the same
+// Problem / Why This Matters shape as a real fix card, just lighter-weight,
+// rather than a bare unlabeled paragraph that reads as a broken card.
+function SuggestionBox({ verdict }: { verdict: string }) {
+  return (
+    <div className="mt-2 bg-canvas border border-line rounded p-3 space-y-2.5">
+      <div>
+        <span className="text-[10px] font-medium text-muted/70 uppercase tracking-wide">Problem</span>
+        <p className="text-xs text-muted leading-snug mt-0.5">{verdict}</p>
+      </div>
+      <div>
+        <span className="text-[9px] font-medium text-muted/50 uppercase tracking-wide">Why this matters</span>
+        <p className="text-[11px] text-muted/70 leading-snug mt-0.5">
+          Borderline clarity — usually fine, but slightly more specific wording would remove any doubt for an agent choosing between similar tools.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ToolCard({ result, fix, expanded, onToggle }: {
   result: ClarityResult; fix?: SuggestedFix; expanded: boolean; onToggle: () => void;
 }) {
   const severity = claritySeverity(result.score);
-  const accent = SEVERITY_ACCENT[severity ?? 'ok'];
+  const accentCls = cardAccentClass(severity);
 
   return (
-    <div className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded overflow-hidden`}>
+    <div className={`${accentCls} bg-surface border-y border-r border-line rounded overflow-hidden`}>
       <button
         type="button"
         onClick={onToggle}
-        className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-line/20 transition-colors"
+        className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-line/20 transition-colors"
       >
         <ScoreBadge score={result.score} />
-        <span className="font-mono text-sm text-fg flex-1 min-w-0 truncate text-left">{result.name}</span>
+        <span className="font-mono text-sm text-fg flex-1 min-w-0 break-words text-left">{result.name}</span>
         {severity ? <SeverityBadge severity={severity} /> : <PassBadge passed />}
         <span className="text-muted text-[10px] flex-shrink-0 select-none font-mono">{expanded ? '−' : '+'}</span>
       </button>
 
-      {expanded && (
+      <CollapsiblePanel expanded={expanded}>
         <div className="px-3 pb-3">
-          {fix
-            ? <SuggestedFixBox fix={fix} clarity={result} />
-            : <p className="text-xs text-muted leading-snug border-t border-line pt-2">{result.verdict}</p>}
+          {fix ? (
+            <SuggestedFixBox fix={fix} clarity={result} />
+          ) : severity === 'suggestion' ? (
+            <SuggestionBox verdict={result.verdict} />
+          ) : (
+            <p className="text-xs text-muted leading-snug border-t border-line pt-2">{result.verdict}</p>
+          )}
         </div>
-      )}
+      </CollapsiblePanel>
     </div>
   );
 }
@@ -453,6 +652,8 @@ function ConfusionRow({ pair }: { pair: ConfusionPair }) {
   );
 }
 
+// ─── Layer 3 · Compatibility card ─────────────────────────────────────────────
+
 function SimStatusTag({ sim }: { sim: SimulationResult }) {
   if (!sim.correct) {
     return (
@@ -479,210 +680,58 @@ function SimStatusTag({ sim }: { sim: SimulationResult }) {
   );
 }
 
-function SimulationRow({ sim, index }: { sim: SimulationResult; index: number }) {
-  const severity = simulationSeverity(sim);
-  const accent = SEVERITY_ACCENT[severity ?? 'ok'];
-  return (
-    <div className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded p-3`}>
-      <div className="flex items-center justify-between gap-3 mb-1.5">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-muted font-mono">SCENARIO {index + 1}</span>
-          {severity && <SeverityBadge severity={severity} />}
-        </div>
-        <SimStatusTag sim={sim} />
-      </div>
-      <p className="text-xs text-fg/85 mb-2 leading-snug">&ldquo;{sim.request}&rdquo;</p>
-
-      <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-xs font-mono border-t border-line pt-2">
-        <span className="text-muted">expected</span>
-        <span className="text-fg">{sim.expectedTool}</span>
-        <span className="text-muted">→</span>
-        <span className="text-muted">picked</span>
-        <span className={sim.correct ? 'text-success' : 'text-critical'}>{sim.pickedTool}</span>
-      </div>
-
-      {Object.keys(sim.pickedArgs).length > 0 && (
-        <pre className="mt-1.5 text-[11px] text-muted bg-canvas border border-line px-2 py-1 rounded overflow-x-auto">
-          {JSON.stringify(sim.pickedArgs)}
-        </pre>
-      )}
-      {sim.argWarning && sim.argIssue && (
-        <p className="text-xs text-warning/90 leading-snug mt-1.5">
-          <span className="font-semibold uppercase tracking-wide text-[10px] text-warning/70 mr-1">
-            {sim.argIssueType === 'schema' ? 'schema violation (programmatic):' : 'value quality warning (heuristic):'}
-          </span>
-          {sim.argIssue}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function VerdictBanner({ summary }: { summary: ReportSummary }) {
-  if (summary.productionStatus === 'ready') {
-    return (
-      <div className="bg-surface border border-line border-l-4 border-l-success rounded p-3 flex items-center gap-2">
-        <span className="text-success text-sm leading-none">✓</span>
-        <span className="text-success font-semibold text-sm">Server ready to ship</span>
-      </div>
-    );
-  }
-
-  const notReady = summary.productionStatus === 'not-ready';
-  const opportunityWord = summary.improvementOpportunities === 1 ? 'improvement opportunity' : 'improvement opportunities';
-  const criticalText = summary.criticalCount > 0
-    ? `${summary.criticalCount} critical failure${summary.criticalCount === 1 ? '' : 's'}`
-    : 'No critical failures';
-  const headline = notReady
-    ? `${summary.criticalCount} critical issue${summary.criticalCount === 1 ? '' : 's'} found before shipping`
-    : `${summary.improvementOpportunities} ${opportunityWord} found before shipping`;
-
-  return (
-    <div className={`bg-surface border border-line border-l-4 rounded p-3 ${
-      notReady ? 'border-l-critical' : 'border-l-warning'
-    }`}>
-      <div className={`font-semibold text-sm mb-1 ${notReady ? 'text-critical' : 'text-warning'}`}>
-        {headline}
-      </div>
-      <div className="text-xs text-muted font-mono">
-        {summary.protocolPassed}/{summary.protocolTotal} protocol checks passed · {summary.compatibilityPassed}/{summary.compatibilityTotal} compatibility scenarios passed
-        {' '}· {summary.improvementOpportunities} {opportunityWord} · {criticalText}
-      </div>
-    </div>
-  );
-}
-
-// ─── Executive summary (top) & production verdict (bottom) ───────────────────
-
-const PRODUCTION_STATUS_STYLE: Record<ReportSummary['productionStatus'], { emoji: string; label: string; cls: string }> = {
-  ready:      { emoji: '✅', label: 'Ready for Production',            cls: 'text-success bg-success/10 border-success/30' },
-  minor:      { emoji: '⚠',  label: 'Ready with Minor Improvements',   cls: 'text-warning bg-warning/10 border-warning/30' },
-  'not-ready':{ emoji: '❌', label: 'Not Ready',                       cls: 'text-critical bg-critical/10 border-critical/30' },
-};
-
-function ProductionStatusBadge({ status }: { status: ReportSummary['productionStatus'] }) {
-  const s = PRODUCTION_STATUS_STYLE[status];
-  return (
-    <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold border ${s.cls}`}>
-      {s.emoji} {s.label}
-    </span>
-  );
-}
-
-// Anchor links to each report section — rendered as the second row of the
-// sticky bar so it stays reachable while scrolling through a long report.
-function SectionNav({ layer2Ran }: { layer2Ran: boolean }) {
-  const links: Array<{ href: string; label: string }> = [
-    { href: '#executive-summary', label: 'Executive Summary' },
-    { href: '#protocol-validation', label: 'Protocol Validation' },
-    ...(layer2Ran ? [
-      { href: '#behavior-validation', label: 'Behavior Validation' },
-      { href: '#compatibility-testing', label: 'Compatibility Testing' },
-    ] : []),
-    { href: '#final-verdict', label: 'Final Verdict' },
-  ];
-  return (
-    <div className="border-t border-line print-hide">
-      <div className="max-w-2xl mx-auto px-4 py-1 flex items-center gap-x-3 text-[10px] text-muted overflow-x-auto whitespace-nowrap">
-        {links.map((l, i) => (
-          <span key={l.href} className="flex items-center gap-x-3">
-            {i > 0 && <span className="text-line">·</span>}
-            <a href={l.href} className="hover:text-suggestion transition-colors">{l.label}</a>
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Compact bar pinned to the top of the viewport once the page scrolls past the
-// header — a VS Code status-bar: solid surface, tight padding, small text.
-function StickySummaryBar({ summary, url, authHeader, onExport }: {
-  summary: ReportSummary; url: string; authHeader: string; onExport: (format: ExportFormat) => void;
+function SimulationRow({ sim, index, fix, expanded, onToggle }: {
+  sim: SimulationResult; index: number; fix?: SuggestedFix; expanded: boolean; onToggle: () => void;
 }) {
-  const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
-  const reanalyzeParams = new URLSearchParams({ url });
-  if (authHeader) reanalyzeParams.set('auth', authHeader);
+  const severity = simulationSeverity(sim);
+  const accentCls = cardAccentClass(severity);
   return (
-    <div className="sticky top-0 z-20 bg-surface border-b border-line print-hide">
-      <div className="max-w-2xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-4 text-[11px] font-mono overflow-x-auto">
-          <span className="font-bold text-fg whitespace-nowrap">
-            {summary.healthScore}<span className="text-muted font-normal">/100</span>
-          </span>
-          <span className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${
-            summary.productionStatus === 'ready' ? 'text-success' :
-            summary.productionStatus === 'minor' ? 'text-warning' : 'text-critical'
-          }`}>
-            {s.emoji} {s.label}
-          </span>
-          <span className="text-critical whitespace-nowrap">🔴 {summary.criticalCount}</span>
-          <span className="text-warning whitespace-nowrap">🟡 {summary.warningCount}</span>
-          <span className="text-suggestion whitespace-nowrap">🔵 {summary.suggestionCount}</span>
+    <div className={`${accentCls} bg-surface border-y border-r border-line rounded overflow-hidden`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-line/20 transition-colors"
+      >
+        <span className="text-[10px] text-muted font-mono flex-shrink-0 mt-0.5">#{index + 1}</span>
+        <span className="text-xs text-fg/85 flex-1 min-w-0 break-words text-left">&ldquo;{sim.request}&rdquo;</span>
+        <SimStatusTag sim={sim} />
+        <span className="text-muted text-[10px] flex-shrink-0 select-none font-mono">{expanded ? '−' : '+'}</span>
+      </button>
+
+      <CollapsiblePanel expanded={expanded}>
+        <div className="px-3 pb-3 border-t border-line pt-2 space-y-2">
+          <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-xs font-mono">
+            <span className="text-muted">expected</span>
+            <span className="text-fg">{sim.expectedTool}</span>
+            <span className="text-muted">→</span>
+            <span className="text-muted">picked</span>
+            <span className={sim.correct ? 'text-success' : 'text-critical'}>{sim.pickedTool}</span>
+          </div>
+
+          {Object.keys(sim.pickedArgs).length > 0 && (
+            <pre className="thin-scroll text-[11px] text-muted bg-canvas border border-line px-2.5 py-2 rounded
+                            whitespace-pre-wrap break-words font-mono max-h-64 overflow-y-auto">
+              {JSON.stringify(sim.pickedArgs, null, 2)}
+            </pre>
+          )}
+          {sim.argWarning && sim.argIssue && (
+            <p className="text-xs text-warning/90 leading-snug">
+              <span className="font-semibold uppercase tracking-wide text-[10px] text-warning/70 mr-1">
+                {sim.argIssueType === 'schema' ? 'schema violation (programmatic):' : 'value quality warning (heuristic):'}
+              </span>
+              {sim.argIssue}
+            </p>
+          )}
+          {fix && <SuggestedFixBox fix={fix} />}
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <Link href={`/check?${reanalyzeParams.toString()}`}
-            className="text-[11px] px-2 py-1 rounded border border-line text-muted
-                       hover:text-fg hover:border-suggestion/50 transition-colors flex items-center gap-1 whitespace-nowrap">
-            ← Re-analyze
-          </Link>
-          <ExportMenu onExport={onExport} />
-        </div>
-      </div>
-      <SectionNav layer2Ran={summary.layer2Ran} />
+      </CollapsiblePanel>
     </div>
   );
 }
 
-function HealthScoreBadge({ score }: { score: number }) {
-  const cls =
-    score >= 80 ? 'text-success border-success/30' :
-    score >= 50 ? 'text-warning border-warning/30' :
-                  'text-critical border-critical/30';
-  return (
-    <div className={`flex flex-col items-center justify-center w-16 h-16 rounded border flex-shrink-0 bg-canvas ${cls}`}>
-      <span className="text-xl font-mono font-bold leading-none">{score}</span>
-      <span className="text-[9px] uppercase tracking-wide mt-1 text-muted">health</span>
-    </div>
-  );
-}
+// ─── Tab content panels ────────────────────────────────────────────────────────
 
-function StatRow({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'good' | 'bad' | 'neutral' }) {
-  const cls = tone === 'good' ? 'text-success' : tone === 'bad' ? 'text-critical' : 'text-fg';
-  return (
-    <div className="flex items-center justify-between py-1">
-      <span className="text-xs text-muted">{label}</span>
-      <span className={`text-xs font-mono font-semibold ${cls}`}>{value}</span>
-    </div>
-  );
-}
-
-// "████████░░" thin, square-edged bar — a filled track sized to the pass rate,
-// so protocol/behavior/compatibility health reads at a glance, not just as a fraction.
-function ProgressBar({ fraction, tone }: { fraction: number; tone: 'good' | 'bad' | 'neutral' }) {
-  const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
-  const barCls = tone === 'good' ? 'bg-success' : tone === 'bad' ? 'bg-critical' : 'bg-warning';
-  return (
-    <div className="h-1 bg-line overflow-hidden">
-      <div className={barCls} style={{ width: `${pct}%`, height: '100%' }} />
-    </div>
-  );
-}
-
-function StatBarRow({ label, value, fraction, tone }: { label: string; value: string; fraction: number; tone: 'good' | 'bad' | 'neutral' }) {
-  const cls = tone === 'good' ? 'text-success' : tone === 'bad' ? 'text-critical' : 'text-fg';
-  return (
-    <div className="py-1">
-      <div className="flex items-center justify-between mb-0.5">
-        <span className="text-xs text-muted">{label}</span>
-        <span className={`text-xs font-mono font-semibold ${cls}`}>{value}</span>
-      </div>
-      <ProgressBar fraction={fraction} tone={tone} />
-    </div>
-  );
-}
-
-function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
+function ExecutiveSummaryTab({ summary }: { summary: ReportSummary }) {
   const protocolOk = summary.protocolTotal > 0 && summary.protocolPassed === summary.protocolTotal;
   const behaviorTone = summary.behaviorLabel === 'Strong' ? 'good' : summary.behaviorLabel === 'Weak' ? 'bad' : 'neutral';
   const compatibilityOk = summary.layer2Ran && summary.compatibilityTotal > 0 && summary.compatibilityPassed === summary.compatibilityTotal;
@@ -691,184 +740,162 @@ function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
   const compatibilityFraction = summary.compatibilityTotal > 0 ? summary.compatibilityPassed / summary.compatibilityTotal : 0;
   const behaviorFraction = summary.clarityAverage !== null ? summary.clarityAverage / 10 : 0;
   const behaviorValue = summary.clarityAverage !== null
-    ? `${summary.behaviorLabel} (${summary.clarityAverage.toFixed(1)}/10)`
+    ? `${summary.clarityAverage.toFixed(1)}/10 · ${summary.behaviorLabel}`
     : summary.behaviorLabel;
 
+  // Staged entrance for the first paint of a freshly-loaded report: gauge/badge,
+  // then the stat cards with a slight stagger, then the rest. Fires once on
+  // mount (this component mounts exactly when a report finishes loading) and
+  // never replays on later tab revisits — after the sequence finishes, the
+  // animation classes are dropped so nothing here keeps re-animating.
+  const [animateIn, setAnimateIn] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setAnimateIn(false), 450);
+    return () => clearTimeout(t);
+  }, []);
+  const stageStyle = (delayMs: number) => animateIn ? { animationDelay: `${delayMs}ms` } : undefined;
+  const stageCls = animateIn ? 'fade-slide-in' : '';
+
   return (
-    <section id="executive-summary" className="scroll-mt-16 bg-surface border border-line rounded p-3">
-      <div className="flex items-start gap-2.5 mb-3">
-        <HealthScoreBadge score={summary.healthScore} />
-        <div className="flex-1 min-w-0">
-          <h2 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1.5">Executive Summary</h2>
+    <div className="space-y-5">
+      <div className={`flex items-center gap-5 flex-wrap ${stageCls}`} style={stageStyle(0)}>
+        <HealthGauge score={summary.healthScore} status={summary.productionStatus} />
+        <div>
+          <div className="text-[11px] text-muted uppercase tracking-wide mb-1.5">Overall Health</div>
           <ProductionStatusBadge status={summary.productionStatus} />
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-x-4">
-        <div>
-          <StatBarRow
-            label="Protocol Validation"
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className={stageCls} style={stageStyle(60)}>
+          <LayerStatCard
+            label="Protocol"
             value={`${summary.protocolPassed}/${summary.protocolTotal} Passed`}
             fraction={protocolFraction}
             tone={protocolOk ? 'good' : 'bad'}
           />
-          <StatBarRow
-            label="Behavior Validation"
+        </div>
+        <div className={stageCls} style={stageStyle(100)}>
+          <LayerStatCard
+            label="Behavior"
             value={behaviorValue}
             fraction={summary.layer2Ran ? behaviorFraction : 0}
             tone={summary.layer2Ran ? behaviorTone : 'neutral'}
           />
-          <StatBarRow
-            label="Compatibility Testing"
-            value={summary.layer2Ran ? `${summary.compatibilityPassed}/${summary.compatibilityTotal} Passed` : 'Not run'}
+        </div>
+        <div className={stageCls} style={stageStyle(140)}>
+          <LayerStatCard
+            label="Compatibility"
+            value={!summary.layer2Ran ? 'Not run' : summary.compatibilityTotal > 0 ? `${summary.compatibilityPassed}/${summary.compatibilityTotal} Passed` : 'No scenarios'}
             fraction={summary.layer2Ran ? compatibilityFraction : 0}
             tone={summary.layer2Ran ? (compatibilityOk ? 'good' : 'neutral') : 'neutral'}
+            split={summary.layer2Ran && summary.compatibilityTotal > 0}
           />
         </div>
-        <div>
-          <StatRow label="Critical Issues" value={String(summary.criticalCount)} tone={summary.criticalCount > 0 ? 'bad' : 'good'} />
-          <StatRow label="Warnings" value={String(summary.warningCount)} tone={summary.warningCount > 0 ? 'neutral' : 'good'} />
-          <StatRow label="Suggestions" value={String(summary.suggestionCount)} />
-        </div>
       </div>
 
-      {summary.highlights.length > 0 && (
-        <div className="mt-2 pt-2 border-t border-line space-y-1">
-          {summary.highlights.map(h => (
-            <div key={h} className="text-xs text-success flex items-center gap-1.5">
-              <span>✓</span><span>{h}</span>
-            </div>
-          ))}
+      <div className={`space-y-5 ${stageCls}`} style={stageStyle(180)}>
+        <div className="grid grid-cols-3 gap-3 max-w-md">
+          <CountBadge label="Critical" count={summary.criticalCount} tone="critical" />
+          <CountBadge label="Warnings" count={summary.warningCount} tone="warning" />
+          <CountBadge label="Suggestions" count={summary.suggestionCount} tone="suggestion" />
+        </div>
+
+        <p className="text-sm text-fg/80 leading-snug">{execSummaryLine(summary)}</p>
+
+        {summary.highlights.length > 0 && (
+          <div className="space-y-1">
+            {summary.highlights.map(h => (
+              <div key={h} className="text-xs text-success flex items-center gap-1.5">
+                <span>✓</span><span>{h}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProtocolTab({ report, expandedKeys, onToggle, setKeysExpanded }: {
+  report: Layer1Report; expandedKeys: Set<string>; onToggle: (key: string) => void; setKeysExpanded: (keys: string[], expand: boolean) => void;
+}) {
+  const passed = report.results.filter(r => r.schemaPassed).length;
+  const total = report.results.length;
+  const allKeys = report.results.map(r => `l1:${r.name}`);
+  const allExpanded = allKeys.length > 0 && allKeys.every(k => expandedKeys.has(k));
+
+  return (
+    <div className="space-y-4">
+      <LayerSectionHeader
+        title="Layer 1 · Protocol Validation"
+        passed={passed}
+        total={total}
+        description="Validates each tool's JSON schema against the MCP protocol spec — malformed schemas cause hard errors when an agent calls the tool."
+        allExpanded={allExpanded}
+        onToggleAll={() => setKeysExpanded(allKeys, !allExpanded)}
+      />
+
+      {report.noToolsCapability && (
+        <div className="bg-surface border border-line border-l-4 border-l-warning rounded p-3 text-warning text-sm">
+          This server does not advertise tool support.
         </div>
       )}
-    </section>
-  );
-}
 
-// 3-4 sentence explanation of exactly why the production verdict landed where it
-// did — built from the same counts shown above it, not a separate judgment call.
-function verdictExplanation(summary: ReportSummary): string[] {
-  const lines: string[] = [];
-
-  // Nothing at all was flagged — not even a suggestion — and the full check
-  // suite actually ran. Say so plainly instead of a report that just trails
-  // off into checkmarks with no closing statement.
-  const isPerfect = summary.layer2Ran &&
-    summary.criticalCount === 0 && summary.warningCount === 0 && summary.suggestionCount === 0;
-  if (isPerfect) {
-    return ['✓ Excellent MCP implementation — No issues detected. Ready for production.'];
-  }
-
-  if (summary.productionStatus === 'ready') {
-    lines.push(
-      `All ${summary.protocolTotal} protocol check${summary.protocolTotal === 1 ? '' : 's'} passed, and the agent picked the correct tool in ` +
-      `${summary.compatibilityPassed}/${summary.compatibilityTotal} compatibility scenarios${summary.layer2Ran ? '' : ' (behavior validation was not run)'}.`,
-    );
-    if (summary.clarityAverage !== null) {
-      lines.push(`Clarity scores average ${summary.clarityAverage.toFixed(1)}/10 with no confirmed ambiguous tool pairs.`);
-    }
-    lines.push('No critical issues or warnings were found in this run — this server is safe to ship as-is.');
-    return lines;
-  }
-
-  if (summary.productionStatus === 'minor') {
-    lines.push(
-      `Protocol validation and tool selection are solid: ${summary.protocolPassed}/${summary.protocolTotal} schemas valid, ` +
-      `${summary.compatibilityPassed}/${summary.compatibilityTotal} compatibility scenarios correct.`,
-    );
-    lines.push(
-      `${summary.warningCount} warning${summary.warningCount === 1 ? '' : 's'} — low-clarity descriptions, confirmed ambiguous ` +
-      `tool pairs, or argument-quality issues — should be addressed before scaling usage.`,
-    );
-    lines.push('None of these block shipping today, but they are the most likely source of an agent picking the wrong tool under different phrasing.');
-    return lines;
-  }
-
-  const criticalParts: string[] = [];
-  if (summary.schemaFailureCount > 0) {
-    criticalParts.push(`${summary.schemaFailureCount} failed protocol schema${summary.schemaFailureCount === 1 ? '' : 's'}`);
-  }
-  if (summary.scenarioFailureCount > 0) {
-    criticalParts.push(`${summary.scenarioFailureCount} scenario${summary.scenarioFailureCount === 1 ? '' : 's'} where the agent picked the wrong tool`);
-  }
-  lines.push(
-    `${summary.criticalCount} critical issue${summary.criticalCount === 1 ? '' : 's'} — ${criticalParts.join(' and ')} — ` +
-    `mean this server will misroute real requests.`,
-  );
-  lines.push(
-    `${summary.protocolPassed}/${summary.protocolTotal} protocol checks passed and ${summary.compatibilityPassed}/${summary.compatibilityTotal} ` +
-    `compatibility scenarios were handled correctly.`,
-  );
-  if (summary.warningCount > 0) {
-    lines.push(`${summary.warningCount} additional warning${summary.warningCount === 1 ? '' : 's'} should be fixed once the critical issues are resolved.`);
-  }
-  lines.push('Fix the critical issues above before shipping this server.');
-  return lines;
-}
-
-function ProductionVerdict({ summary }: { summary: ReportSummary }) {
-  const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
-  const accentCls =
-    summary.productionStatus === 'ready' ? 'border-l-success' :
-    summary.productionStatus === 'minor' ? 'border-l-warning' : 'border-l-critical';
-  const lines = verdictExplanation(summary);
-
-  return (
-    <section id="final-verdict" className={`scroll-mt-16 bg-surface border border-line border-l-4 ${accentCls} rounded p-4 print:break-before-page`}>
-      <div className="flex items-center gap-2 text-sm font-bold mb-3">
-        <span>{s.emoji}</span><span className="text-fg">{s.label}</span>
-      </div>
-      <div className="space-y-1.5 text-sm text-muted leading-snug">
-        {lines.map((line, i) => <p key={i}>{line}</p>)}
-      </div>
-      <p className="mt-3 pt-2 border-t border-line text-[11px] text-muted/70 leading-snug">
-        &ldquo;Ready for Production&rdquo; means: schema valid and tested model correctly selected the right tool
-        across generated scenarios. Not exhaustive testing across all models or all user phrasings.
-      </p>
-    </section>
-  );
-}
-
-function Layer2Section({ report, summary, expandedKeys, onToggle }: {
-  report: Layer2Report; summary: ReportSummary; expandedKeys: Set<string>; onToggle: (key: string) => void;
-}) {
-  const simTotal = report.simulation.length;
-  const simPassed = report.simulationScore;
-  const fixByName = new Map(report.suggestedFixes.map(f => [f.name, f]));
-  const showConfusionCaveat = report.confusedPairs.length > 0 && simTotal > 0 && simPassed === simTotal;
-
-  return (
-    <section id="behavior-validation" className="scroll-mt-16 space-y-6 print:break-before-page">
-      <VerdictBanner summary={summary} />
-
-      <SectionHeader title="Layer 2 · Behavior Validation" />
-
-      {/* Check 1: Clarity */}
-      <div>
-        <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2">
-          Check 1 · Clarity Analysis
-        </h3>
-        <div className="space-y-2">
-          {report.clarity.map(r => {
-            const key = `l2:${r.name}`;
+      {total > 0 && passed === total ? (
+        <EmptyState message={`All ${total} tool${total !== 1 ? 's' : ''} passed schema validation with no issues.`} />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5 items-start">
+          {report.results.map((tool, i) => {
+            const key = `l1:${tool.name}`;
             return (
-              <ToolCard
-                key={r.name}
-                result={r}
-                fix={fixByName.get(r.name)}
-                expanded={expandedKeys.has(key)}
-                onToggle={() => onToggle(key)}
-              />
+              <Layer1ToolRow key={tool.name} tool={tool} index={i} total={total}
+                expanded={expandedKeys.has(key)} onToggle={() => onToggle(key)} />
             );
           })}
         </div>
-      </div>
+      )}
+    </div>
+  );
+}
 
-      {/* Check 2: Confusion */}
+function BehaviorTab({ report, expandedKeys, onToggle, setKeysExpanded }: {
+  report: Layer2Report; expandedKeys: Set<string>; onToggle: (key: string) => void; setKeysExpanded: (keys: string[], expand: boolean) => void;
+}) {
+  const clarityWarnCount = report.clarity.filter(c => claritySeverity(c.score) === 'warning').length;
+  const highConfusion = report.confusedPairs.filter(p => p.severity === 'HIGH').length;
+  const clean = clarityWarnCount === 0 && highConfusion === 0;
+  const fixByName = new Map(report.suggestedFixes.map(f => [f.name, f]));
+  const allKeys = report.clarity.map(c => `l2:${c.name}`);
+  const allExpanded = allKeys.length > 0 && allKeys.every(k => expandedKeys.has(k));
+
+  return (
+    <div className="space-y-6">
+      <LayerSectionHeader
+        title="Layer 2 · Behavior Validation"
+        passed={report.clarity.length - clarityWarnCount}
+        total={report.clarity.length}
+        description="Checks whether tool descriptions are clear and distinct enough for an LLM agent to reliably pick the right one."
+        allExpanded={allExpanded}
+        onToggleAll={() => setKeysExpanded(allKeys, !allExpanded)}
+      />
+
+      {clean && report.clarity.length > 0 ? (
+        <EmptyState message={`All ${report.clarity.length} tool${report.clarity.length !== 1 ? 's' : ''} passed with no clarity or ambiguity issues.`} />
+      ) : (
+        <div className="space-y-2.5">
+          {report.clarity.map(r => {
+            const key = `l2:${r.name}`;
+            return (
+              <ToolCard key={r.name} result={r} fix={fixByName.get(r.name)}
+                expanded={expandedKeys.has(key)} onToggle={() => onToggle(key)} />
+            );
+          })}
+        </div>
+      )}
+
       <div>
-        <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2">
-          Check 2 · Ambiguity Analysis
-        </h3>
+        <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2">Ambiguity Analysis</h3>
         {report.confusedPairs.length === 0 ? (
           <div className="bg-surface border border-line border-l-4 border-l-success rounded p-3 text-success text-sm">
             ✓ No confused tool pairs detected.
@@ -879,34 +906,78 @@ function Layer2Section({ report, summary, expandedKeys, onToggle }: {
           </div>
         )}
       </div>
+    </div>
+  );
+}
 
-      {/* Check 3: Simulation */}
-      <div id="compatibility-testing" className="scroll-mt-16 print:break-before-page">
-        <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-3">
-          Check 3 · Compatibility Testing
-          <span className={`normal-case text-xs font-mono font-bold ${
-            simPassed === simTotal ? 'text-success' :
-            simPassed >= Math.ceil(simTotal / 2) ? 'text-warning' :
-            'text-critical'
-          }`}>
-            {simPassed}/{simTotal} passed
-          </span>
-        </h3>
-        <p className="text-[11px] text-muted mb-2 normal-case">
-          Agent simulation run at fixed temperature for reproducible results.
-        </p>
-        {showConfusionCaveat && (
-          <p className="text-[11px] text-muted leading-snug mb-2 normal-case">
-            {simPassed}/{simTotal} passed on this run — confusion risk flagged above may surface on
-            different user phrasings. Scenario simulation is one sample; confusion detection identifies
-            structural risk regardless of this run&rsquo;s outcome.
-          </p>
-        )}
-        <div className="space-y-2">
-          {report.simulation.map((sim, i) => <SimulationRow key={i} sim={sim} index={i} />)}
+function CompatibilityTab({ report, expandedKeys, onToggle, setKeysExpanded }: {
+  report: Layer2Report; expandedKeys: Set<string>; onToggle: (key: string) => void; setKeysExpanded: (keys: string[], expand: boolean) => void;
+}) {
+  const total = report.simulation.length;
+  const passed = report.simulationScore;
+  const failCount = report.simulation.filter(s => !s.correct).length;
+  const warnCount = report.simulation.filter(s => s.correct && s.argWarning).length;
+  const clean = failCount === 0 && warnCount === 0;
+  const allKeys = report.simulation.map((_, i) => `l3:${i}`);
+  const allExpanded = allKeys.length > 0 && allKeys.every(k => expandedKeys.has(k));
+  const fixByScenario = new Map(
+    report.suggestedFixes.filter(f => f.scenarioContext).map(f => [f.scenarioContext!.scenarioIndex, f]),
+  );
+
+  return (
+    <div className="space-y-4">
+      <LayerSectionHeader
+        title="Layer 3 · Compatibility Testing"
+        passed={passed}
+        total={total}
+        description="Simulates real user requests against a live agent to confirm it selects the correct tool and arguments."
+        allExpanded={allExpanded}
+        onToggleAll={() => setKeysExpanded(allKeys, !allExpanded)}
+      />
+
+      {clean && total > 0 ? (
+        <EmptyState message={`All ${total} scenario${total !== 1 ? 's' : ''} passed with no issues.`} />
+      ) : (
+        <div className="space-y-2.5">
+          {report.simulation.map((sim, i) => {
+            const key = `l3:${i}`;
+            return (
+              <SimulationRow key={i} sim={sim} index={i} fix={fixByScenario.get(i + 1)}
+                expanded={expandedKeys.has(key)} onToggle={() => onToggle(key)} />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VerdictTab({ summary }: { summary: ReportSummary }) {
+  const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
+  const accentCls =
+    summary.productionStatus === 'ready' ? 'border-l-success' :
+    summary.productionStatus === 'minor' ? 'border-l-warning' : 'border-l-critical';
+  const paragraph = verdictExplanation(summary).join(' ');
+
+  return (
+    <div className="space-y-4">
+      <div className={`bg-surface border border-line border-l-4 ${accentCls} rounded p-5`}>
+        <div className="flex items-center gap-2.5 text-lg font-bold mb-3">
+          <span>{s.emoji}</span><span className="text-fg">{s.label}</span>
+        </div>
+        <p className="text-sm text-fg/80 leading-relaxed mb-4">{paragraph}</p>
+        <div className="grid grid-cols-3 gap-3 max-w-md">
+          <CountBadge label="Critical" count={summary.criticalCount} tone="critical" />
+          <CountBadge label="Warnings" count={summary.warningCount} tone="warning" />
+          <CountBadge label="Suggestions" count={summary.suggestionCount} tone="suggestion" />
         </div>
       </div>
-    </section>
+
+      <Callout tone="info">
+        &ldquo;Ready for Production&rdquo; means schema valid and tested model selected the correct tool across
+        generated scenarios. Not exhaustive testing across all models or all user phrasings.
+      </Callout>
+    </div>
   );
 }
 
@@ -1080,10 +1151,10 @@ function ExportMenu({ onExport }: { onExport: (format: ExportFormat) => void }) 
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="text-[11px] px-2 py-1 rounded border border-line text-muted
+        className="text-xs px-3 py-1.5 rounded border border-line text-muted
                    hover:text-fg hover:border-suggestion/50 transition-colors font-mono flex items-center gap-1"
       >
-        Export <span className="text-[8px]">▼</span>
+        Export <span className="text-[8px]">▾</span>
       </button>
       {open && (
         <div className="absolute right-0 mt-1 w-48 bg-surface border border-line rounded shadow-lg z-30 overflow-hidden">
@@ -1120,13 +1191,173 @@ function ExportToast({ message }: { message: string }) {
   );
 }
 
-// Rendered only in print output — the on-screen header carries the same info
-// via the sticky bar / nav, both of which are hidden on paper.
+// Rendered only in print output — the tab bar and header buttons are hidden on paper.
 function PrintHeader({ serverName }: { serverName: string }) {
   return (
     <div className="hidden print:block mb-4 pb-2 border-b border-line">
       <h1 className="text-lg font-bold text-fg">MCP Checker Report — {serverName}</h1>
       <p className="text-sm text-muted">{new Date().toLocaleString()}</p>
+    </div>
+  );
+}
+
+// ─── Tabs ───────────────────────────────────────────────────────────────────
+
+type TabId = 'summary' | 'protocol' | 'behavior' | 'compatibility' | 'verdict';
+
+const TABS: Array<{ id: TabId; label: string }> = [
+  { id: 'summary', label: 'Executive Summary' },
+  { id: 'protocol', label: 'Protocol' },
+  { id: 'behavior', label: 'Behavior' },
+  { id: 'compatibility', label: 'Compatibility' },
+  { id: 'verdict', label: 'Verdict' },
+];
+
+// Panels stay mounted at all times (only visibility toggles) so an inactive tab's
+// scroll/expand state survives switching, and so PDF export — which forces every
+// panel visible via the `print:` override below — can print the full report
+// regardless of which tab was active when Export was clicked.
+function tabPanelClass(id: TabId, active: TabId, pageBreak = true): string {
+  if (active === id) return 'block tab-fade-in';
+  return `hidden print:block print:mt-8${pageBreak ? ' print:break-before-page' : ''}`;
+}
+
+function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => void }) {
+  const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  const move = (dir: 1 | -1) => {
+    const idx = TABS.findIndex(t => t.id === active);
+    const next = TABS[(idx + dir + TABS.length) % TABS.length];
+    onChange(next.id);
+    btnRefs.current[next.id]?.focus();
+  };
+
+  return (
+    <div role="tablist" aria-label="Report sections"
+      className="flex items-center gap-1 border-b border-line px-4 overflow-x-auto print-hide">
+      {TABS.map(t => (
+        <button
+          key={t.id}
+          ref={el => { btnRefs.current[t.id] = el; }}
+          id={`tab-${t.id}`}
+          type="button"
+          role="tab"
+          aria-selected={active === t.id}
+          aria-controls={`panel-${t.id}`}
+          tabIndex={active === t.id ? 0 : -1}
+          onClick={() => onChange(t.id)}
+          onKeyDown={e => {
+            if (e.key === 'ArrowRight') { e.preventDefault(); move(1); }
+            if (e.key === 'ArrowLeft') { e.preventDefault(); move(-1); }
+          }}
+          className={`px-3 py-2.5 text-xs font-medium border-b-2 whitespace-nowrap transition-colors ${
+            active === t.id ? 'border-suggestion text-fg' : 'border-transparent text-muted hover:text-fg'
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Header ─────────────────────────────────────────────────────────────────
+
+function ReportHeader({ url, authHeader, onExport, showExport }: {
+  url: string; authHeader: string; onExport: (format: ExportFormat) => void; showExport: boolean;
+}) {
+  const displayUrl = url.replace(/^https?:\/\//, '');
+  const reanalyzeParams = new URLSearchParams({ url });
+  if (authHeader) reanalyzeParams.set('auth', authHeader);
+
+  return (
+    <header className="border-b border-line px-4 py-4">
+      <div className="max-w-6xl mx-auto flex items-center justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <div className="font-mono text-lg sm:text-xl text-fg font-medium truncate">{displayUrl}</div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0 print-hide">
+          <Link href={`/check?${reanalyzeParams.toString()}`}
+            className="text-xs px-3 py-1.5 rounded border border-line text-muted
+                       hover:text-fg hover:border-suggestion/50 transition-colors whitespace-nowrap">
+            Re-analyze
+          </Link>
+          {showExport && <ExportMenu onExport={onExport} />}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+// ─── Sidebar ────────────────────────────────────────────────────────────────
+
+function ReportSidebar({ layer1, scanDurationMs, scannedAt, activeTab }: {
+  layer1: Layer1Report; scanDurationMs: number | null; scannedAt: Date | null; activeTab: TabId;
+}) {
+  // The Claude-only testing disclosure is report-level context, not per-layer
+  // detail — showing it on every tab just repeats the same sentence five
+  // times, so it's reserved for the tabs that talk about the overall verdict.
+  const showTestedAgainst = activeTab === 'summary' || activeTab === 'verdict';
+
+  return (
+    <aside className="space-y-4">
+      <div className="bg-surface border border-line rounded p-3">
+        <h3 className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-2">Report Information</h3>
+        <dl className="space-y-1.5 text-xs">
+          <div className="flex justify-between gap-2">
+            <dt className="text-muted">Server Name</dt>
+            <dd className="font-mono text-fg text-right truncate">{layer1.serverName ?? '—'}</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-muted">Tools Validated</dt>
+            <dd className="font-mono text-fg">{layer1.toolCount}</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-muted">Scan Duration</dt>
+            <dd className="font-mono text-fg">{scanDurationMs !== null ? formatDuration(scanDurationMs) : '—'}</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-muted">Scanned At</dt>
+            <dd className="font-mono text-fg text-right">{scannedAt ? scannedAt.toLocaleString() : '—'}</dd>
+          </div>
+        </dl>
+      </div>
+
+      {showTestedAgainst && (
+        <Callout tone="info" title="Tested Against">
+          This report validates tool-selection behavior for Claude-based agents. Results for other models
+          (GPT-4, Gemini, etc.) may vary — multi-model testing is on the roadmap.
+        </Callout>
+      )}
+    </aside>
+  );
+}
+
+// ─── Loading ────────────────────────────────────────────────────────────────
+
+function LoadingSteps({ steps, currentIndex }: { steps: string[]; currentIndex: number }) {
+  return (
+    <div className="bg-surface border border-line rounded p-4 space-y-2.5">
+      {steps.map((label, i) => {
+        const state = i < currentIndex ? 'done' : i === currentIndex ? 'active' : 'pending';
+        return (
+          <div key={label} className="flex items-center gap-2.5 text-sm">
+            <span className="w-4 h-4 flex items-center justify-center flex-shrink-0">
+              {state === 'done' && <span className="text-success text-xs">✓</span>}
+              {state === 'active' && (
+                <svg className="animate-spin h-3.5 w-3.5 text-suggestion" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              )}
+              {state === 'pending' && <span className="w-1.5 h-1.5 rounded-full bg-line" />}
+            </span>
+            <span className={state === 'active' ? 'text-fg font-medium' : state === 'done' ? 'text-muted' : 'text-muted/50'}>
+              {label}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1149,10 +1380,12 @@ function ResultsContent() {
   const [layer2Loading, setLayer2Loading] = useState(false);
   const [layer2Error, setLayer2Error]   = useState<string | null>(null);
 
-  // Which tool cards are expanded, keyed "l1:<name>" / "l2:<name>" so Layer 1
-  // and Layer 2 rows for the same tool name don't collide. Centralized here
-  // (rather than local state per card) so Expand All / Collapse All can drive
-  // every card at once.
+  const [activeTab, setActiveTab] = useState<TabId>('summary');
+
+  // Which tool cards are expanded, keyed "l1:<name>" / "l2:<name>" / "l3:<index>"
+  // so Protocol, Behavior, and Compatibility cards never collide. Centralized
+  // here (rather than local state per card) so Expand All / Collapse All can
+  // drive every card in a tab at once, and PDF export can force everything open.
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
   const toggleKey = (key: string) => {
     setExpandedKeys(prev => {
@@ -1161,9 +1394,17 @@ function ResultsContent() {
       return next;
     });
   };
+  const setKeysExpanded = (keys: string[], expand: boolean) => {
+    setExpandedKeys(prev => {
+      const next = new Set(prev);
+      keys.forEach(k => { if (expand) next.add(k); else next.delete(k); });
+      return next;
+    });
+  };
 
-  // Seed default-expanded cards (failed schemas, warning-level clarity) the
-  // moment each dataset arrives, without clobbering any manual toggles made since.
+  // Seed default-expanded cards (failed schemas, warning-level clarity, failed
+  // or warning-level scenarios) the moment each dataset arrives, without
+  // clobbering any manual toggles made since.
   useEffect(() => {
     if (!layer1) return;
     setExpandedKeys(prev => {
@@ -1178,6 +1419,7 @@ function ResultsContent() {
     setExpandedKeys(prev => {
       const next = new Set(prev);
       layer2.clarity.forEach(c => { if (claritySeverity(c.score) === 'warning') next.add(`l2:${c.name}`); });
+      layer2.simulation.forEach((s, i) => { if (simulationSeverity(s)) next.add(`l3:${i}`); });
       return next;
     });
   }, [layer2]);
@@ -1186,10 +1428,10 @@ function ResultsContent() {
     const keys: string[] = [];
     if (layer1) layer1.results.forEach(r => keys.push(`l1:${r.name}`));
     if (layer2) layer2.clarity.forEach(c => keys.push(`l2:${c.name}`));
+    if (layer2) layer2.simulation.forEach((_, i) => keys.push(`l3:${i}`));
     return keys;
   };
   const expandAll = () => setExpandedKeys(new Set(allCardKeys()));
-  const collapseAll = () => setExpandedKeys(new Set());
 
   const [toast, setToast] = useState<string | null>(null);
   useEffect(() => {
@@ -1199,27 +1441,53 @@ function ResultsContent() {
   }, [toast]);
 
   // Sequential loading messages. The real network calls are just two fetches
-  // (Layer 1, then Layer 2), so each phase's second message is a timed
-  // progression rather than a distinct backend event — the interval is
-  // cleared the moment the fetch actually resolves either way.
-  const [layer1Tick, setLayer1Tick] = useState(0);
+  // (Layer 1, then Layer 2), so most of these are a timed progression rather
+  // than a distinct backend event — each interval is cleared the moment the
+  // fetch actually resolves either way.
+  const [tick, setTick] = useState(0);
   useEffect(() => {
-    setLayer1Tick(0);
+    setTick(0);
     if (!layer1Loading) return;
-    const id = setInterval(() => setLayer1Tick(t => Math.min(t + 1, 1)), 900);
+    const id = setInterval(() => setTick(t => Math.min(t + 1, 2)), 700);
     return () => clearInterval(id);
   }, [layer1Loading]);
 
-  const [layer2Tick, setLayer2Tick] = useState(0);
+  const [layer1JustFinished, setLayer1JustFinished] = useState(false);
   useEffect(() => {
-    setLayer2Tick(0);
+    if (!layer1 || layer1Loading) return;
+    setLayer1JustFinished(true);
+    const t = setTimeout(() => setLayer1JustFinished(false), 400);
+    return () => clearTimeout(t);
+  }, [layer1, layer1Loading]);
+
+  const [tick2, setTick2] = useState(0);
+  useEffect(() => {
+    setTick2(0);
     if (!layer2Loading) return;
-    const id = setInterval(() => setLayer2Tick(t => Math.min(t + 1, 1)), 1200);
+    const id = setInterval(() => setTick2(t => Math.min(t + 1, 1)), 1200);
     return () => clearInterval(id);
   }, [layer2Loading]);
 
+  const loadingStepsList = runAi
+    ? ['Connecting to MCP server', 'Performing handshake', 'Discovering tools', 'Layer 1 · Protocol validation', 'Layer 2 · Behavior validation', 'Layer 3 · Compatibility testing']
+    : ['Connecting to MCP server', 'Performing handshake', 'Discovering tools', 'Layer 1 · Protocol validation'];
+
+  const currentStepIndex =
+    layer1Loading ? tick :
+    layer1JustFinished ? 3 :
+    layer2Loading ? 4 + tick2 :
+    loadingStepsList.length - 1;
+
+  const scanStartRef = useRef<number | null>(null);
+  const [scanDurationMs, setScanDurationMs] = useState<number | null>(null);
+  const [scannedAt, setScannedAt] = useState<Date | null>(null);
+
   useEffect(() => {
     if (!url) { router.push('/check'); return; }
+
+    scanStartRef.current = Date.now();
+    setScanDurationMs(null);
+    setScannedAt(null);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60_000);
@@ -1284,8 +1552,16 @@ function ResultsContent() {
   // briefly while the request is still in flight.
   const dataReady = layer1 !== null && !layer1Loading && (!runAi || layer2 !== null || layer2Error !== null);
 
+  useEffect(() => {
+    if (dataReady && scanDurationMs === null && scanStartRef.current !== null) {
+      setScanDurationMs(Date.now() - scanStartRef.current);
+      setScannedAt(new Date());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataReady]);
+
   // Brief "Generating report..." beat between the last fetch resolving and the
-  // report appearing — the fifth loading step, not a real async gap.
+  // report appearing — the final loading step, not a real async gap.
   const [finalizing, setFinalizing] = useState(false);
   useEffect(() => {
     if (!dataReady) return;
@@ -1313,105 +1589,67 @@ function ResultsContent() {
     }
   };
 
-  const currentStepLabel: string | null =
-    layer1Loading ? (layer1Tick === 0 ? 'Connecting to MCP server...' : 'Validating protocol...') :
-    layer2Loading ? (layer2Tick === 0 ? 'Running behavior analysis...' : 'Running compatibility simulations...') :
-    (dataReady && finalizing) ? 'Generating report...' :
-    null;
-
   return (
     <div className="min-h-screen bg-canvas">
-      {/* Top bar */}
-      <header className="border-b border-line px-4 py-2.5 flex items-center gap-3 print-hide">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[11px] text-muted">Checking</span>
-          <span className="font-mono text-xs text-suggestion truncate">{hostname}</span>
-        </div>
-      </header>
+      <ReportHeader
+        url={url}
+        authHeader={authHeader}
+        onExport={handleExport}
+        showExport={!!summary}
+      />
 
-      {summary && <StickySummaryBar summary={summary} url={url} authHeader={authHeader} onExport={handleExport} />}
+      {summary && layer1 && <TabBar active={activeTab} onChange={setActiveTab} />}
 
-      <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
-        {summary && <PrintHeader serverName={layer1?.serverName ?? hostname} />}
-        {/* Executive summary dashboard — leads the whole report */}
-        {summary && <ExecutiveSummary summary={summary} />}
-        {!summary && dataReady && finalizing && (
-          <div className="bg-surface border border-line rounded p-3">
-            <Spinner label={currentStepLabel ?? 'Generating report...'} />
+      <main className="max-w-6xl mx-auto px-4 py-6">
+        {summary && layer1 && <PrintHeader serverName={layer1.serverName ?? hostname} />}
+
+        {!summary && (
+          <div className="max-w-md mx-auto py-10">
+            {layer1Error && !layer1 && !layer1Loading ? (
+              <ErrorBox message={layer1Error} defaultHeader="Connection failed" />
+            ) : (
+              <LoadingSteps steps={loadingStepsList} currentIndex={currentStepIndex} />
+            )}
           </div>
         )}
 
-        {/* Server info + Layer 1 are grouped tightly — the info line is Layer 1's intro, not its own section */}
-        <div className="space-y-3">
-          {layer1 && !layer1Loading && (
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="w-1.5 h-1.5 bg-success rounded-full flex-shrink-0" />
-                {layer1.serverName ? (
-                  <span className="text-fg/80 truncate">
-                    <span className="font-semibold text-fg">{layer1.serverName}</span>
-                    {layer1.serverVersion && <span className="text-muted"> v{layer1.serverVersion}</span>}
-                    <span className="text-muted"> · {layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''}</span>
-                  </span>
+        {summary && layer1 && (
+          <div className="grid grid-cols-1 lg:grid-cols-[7fr_3fr] gap-6">
+            <div className="min-w-0">
+              <div id="panel-summary" role="tabpanel" aria-labelledby="tab-summary" className={tabPanelClass('summary', activeTab, false)}>
+                <ExecutiveSummaryTab summary={summary} />
+              </div>
+
+              <div id="panel-protocol" role="tabpanel" aria-labelledby="tab-protocol" className={tabPanelClass('protocol', activeTab)}>
+                <ProtocolTab report={layer1} expandedKeys={expandedKeys} onToggle={toggleKey} setKeysExpanded={setKeysExpanded} />
+              </div>
+
+              <div id="panel-behavior" role="tabpanel" aria-labelledby="tab-behavior" className={tabPanelClass('behavior', activeTab)}>
+                {layer2Error ? (
+                  <ErrorBox message={layer2Error} defaultHeader="Behavior validation failed" />
+                ) : layer2 ? (
+                  <BehaviorTab report={layer2} expandedKeys={expandedKeys} onToggle={toggleKey} setKeysExpanded={setKeysExpanded} />
                 ) : (
-                  <span className="text-muted">{layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''} found</span>
+                  <p className="text-sm text-muted py-10 text-center">Behavior validation was not run for this scan.</p>
                 )}
               </div>
-              <div className="flex items-center gap-1.5 flex-shrink-0 print-hide">
-                <button
-                  onClick={expandAll}
-                  className="text-[10px] px-1.5 py-0.5 rounded border border-line text-muted
-                             hover:text-fg hover:border-suggestion/50 transition-colors font-mono"
-                >
-                  expand all
-                </button>
-                <button
-                  onClick={collapseAll}
-                  className="text-[10px] px-1.5 py-0.5 rounded border border-line text-muted
-                             hover:text-fg hover:border-suggestion/50 transition-colors font-mono"
-                >
-                  collapse all
-                </button>
+
+              <div id="panel-compatibility" role="tabpanel" aria-labelledby="tab-compatibility" className={tabPanelClass('compatibility', activeTab)}>
+                {layer2Error ? (
+                  <ErrorBox message={layer2Error} defaultHeader="Compatibility testing failed" />
+                ) : layer2 ? (
+                  <CompatibilityTab report={layer2} expandedKeys={expandedKeys} onToggle={toggleKey} setKeysExpanded={setKeysExpanded} />
+                ) : (
+                  <p className="text-sm text-muted py-10 text-center">Compatibility testing was not run for this scan.</p>
+                )}
+              </div>
+
+              <div id="panel-verdict" role="tabpanel" aria-labelledby="tab-verdict" className={tabPanelClass('verdict', activeTab)}>
+                <VerdictTab summary={summary} />
               </div>
             </div>
-          )}
 
-          {layer1Loading && (
-            <div className="bg-surface border border-line rounded p-3">
-              <Spinner label={currentStepLabel ?? 'Connecting to MCP server...'} />
-            </div>
-          )}
-          {layer1Error && !layer1 && !layer1Loading && (
-            <ErrorBox message={layer1Error} defaultHeader="Connection failed" />
-          )}
-          {layer1 && !layer1Loading && (
-            <Layer1Section report={layer1} expandedKeys={expandedKeys} onToggle={toggleKey} />
-          )}
-        </div>
-
-        {/* Layer 2 */}
-        {layer2Loading && (
-          <div className="bg-surface border border-line rounded p-3">
-            <Spinner label={currentStepLabel ?? 'Running behavior analysis...'} />
-          </div>
-        )}
-        {layer2Error && (
-          <ErrorBox message={layer2Error} defaultHeader="Layer 2 failed" />
-        )}
-        {layer2 && summary && (
-          <Layer2Section report={layer2} summary={summary} expandedKeys={expandedKeys} onToggle={toggleKey} />
-        )}
-
-        {/* Production verdict — closes out the report */}
-        {summary && <ProductionVerdict summary={summary} />}
-
-        {/* Check another */}
-        {!layer1Loading && (
-          <div className="pt-3 border-t border-line print-hide">
-            <Link href="/check"
-              className="text-xs text-muted hover:text-fg transition-colors">
-              ← Check another server
-            </Link>
+            <ReportSidebar layer1={layer1} scanDurationMs={scanDurationMs} scannedAt={scannedAt} activeTab={activeTab} />
           </div>
         )}
       </main>
