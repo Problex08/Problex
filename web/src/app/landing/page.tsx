@@ -13,7 +13,7 @@ function Navbar() {
     <header className="border-b border-line">
       <div className="max-w-6xl mx-auto py-3 flex items-center justify-between">
         <Link href="/" className="flex items-center gap-[10px] pl-6">
-          <Image src="/logo-icon.png" alt="" width={253} height={442} className="h-11 w-auto" priority />
+          <Image src="/logo-icon.png" alt="" width={253} height={442} className="h-11 w-auto translate-y-[1px]" priority />
           <Image src="/logo-wordmark.png" alt="Problex" width={1232} height={203} className="h-[22px] w-auto" priority />
         </Link>
         <div className="flex items-center gap-4 pr-6">
