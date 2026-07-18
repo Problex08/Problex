@@ -28,7 +28,7 @@ CHECK 3 · COMPATIBILITY TESTING
 
 A real, publicly hosted MCP server. Its schemas all validate — every structural check passes. But two of its three tools describe the same thing well enough that an agent reliably picks the wrong one, and Problex's scenario simulation caught the exact failure the ambiguity check predicted. No hand-written test case found this. It was generated, run, and confirmed automatically.
 
-**Reproduce this yourself:** go to [problex.dev/check](https://problex.dev/check), paste `https://mcp.deepwiki.com/mcp`, and run a full validation. The exact clarity score may shift slightly between runs — the underlying model isn't deterministic on scoring — but the confusion pair itself is structural and shows up consistently.
+**Reproduce this yourself:** go to [problex.dev/check](https://problex.dev/check), paste `https://mcp.deepwiki.com/mcp`, and run a full validation. The exact clarity score may vary between runs — LLM-based scoring isn't perfectly deterministic — but the confusion pair itself is structural and shows up consistently.
 
 Also tested against Microsoft's Release Communications server, Roundtable MCP (13 tools, 9+ confusion pairs flagged), and others — the pattern holds on every real server we've thrown at it, not just this one.
 
