@@ -8,7 +8,7 @@ let redis: Redis | null | undefined;
 
 // Lazily construct the client so a missing config doesn't crash module load
 // (e.g. local dev before Upstash credentials are set up).
-function getRedis(): Redis | null {
+export function getRedis(): Redis | null {
   if (redis !== undefined) return redis;
 
   const url = process.env.UPSTASH_REDIS_REST_URL;

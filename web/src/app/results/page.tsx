@@ -48,6 +48,10 @@ function Spinner({ label }: { label: string }) {
 }
 
 const RATE_LIMIT_MESSAGE = "You've reached the limit of 10 checks per hour. Please wait before running another check.";
+// Kept in sync with DAILY_CAP_MESSAGE in web/src/lib/dailyAiCap.ts — the backend
+// returns this exact string when the global daily AI-check cap is reached.
+const DAILY_CAP_MESSAGE =
+  "AI-powered checks have reached today's capacity — protocol validation is still available. Please try again tomorrow, or check back later.";
 
 class ApiError extends Error {
   status: number;
@@ -59,6 +63,7 @@ class ApiError extends Error {
 
 function friendlyErrorMessage(e: unknown): string {
   if (e instanceof ApiError && e.status === 429) return RATE_LIMIT_MESSAGE;
+  if (e instanceof ApiError && e.status === 503 && e.message === DAILY_CAP_MESSAGE) return DAILY_CAP_MESSAGE;
   return e instanceof Error ? e.message : 'Failed to connect';
 }
 
@@ -152,12 +157,19 @@ interface ReportSummary {
   warningCount: number;
   suggestionCount: number;
   improvementOpportunities: number;
-  productionStatus: 'ready' | 'minor' | 'not-ready';
+  productionStatus: 'ready' | 'minor' | 'not-ready' | 'incomplete';
   highlights: string[];
   layer2Ran: boolean;
+  // True when Layer 2/3 didn't run because the global daily AI-check cap was
+  // reached — distinct from layer2Ran===false due to a real failure or AI not
+  // being requested at all, since here the score/verdict must not be presented
+  // as if Behavior/Compatibility ran and passed.
+  capacityLimited: boolean;
 }
 
-function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null): ReportSummary {
+function computeReportSummary(
+  layer1: Layer1Report, layer2: Layer2Report | null, capacityLimited = false,
+): ReportSummary {
   const protocolTotal = layer1.results.length;
   const protocolPassed = layer1.results.filter(r => r.schemaPassed).length;
   const protocolRate = protocolTotal > 0 ? protocolPassed / protocolTotal : 1;
@@ -200,6 +212,7 @@ function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null)
   const improvementOpportunities = layer2?.verdict.issuesCount ?? 0;
 
   const productionStatus: ReportSummary['productionStatus'] =
+    capacityLimited ? 'incomplete' :
     criticalCount > 0 ? 'not-ready' :
     warningCount > 0 ? 'minor' : 'ready';
 
@@ -221,6 +234,7 @@ function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null)
     protocolPassed, protocolTotal, behaviorLabel, compatibilityPassed, compatibilityTotal,
     clarityAverage, healthScore, criticalCount, schemaFailureCount, scenarioFailureCount,
     warningCount, suggestionCount, improvementOpportunities, productionStatus, highlights, layer2Ran,
+    capacityLimited,
   };
 }
 
@@ -233,6 +247,14 @@ function verdictExplanation(summary: ReportSummary): string[] {
     summary.criticalCount === 0 && summary.warningCount === 0 && summary.suggestionCount === 0;
   if (isPerfect) {
     return ['Excellent MCP implementation — no issues detected. Ready for production.'];
+  }
+
+  if (summary.capacityLimited) {
+    return [
+      `Protocol validation completed: ${summary.protocolPassed}/${summary.protocolTotal} check${summary.protocolTotal === 1 ? '' : 's'} passed.`,
+      "AI-powered behavior and compatibility checks did not run because today's capacity limit was reached — this is an incomplete verdict, not a pass or fail.",
+      'Check back tomorrow once the daily limit resets for a full verdict.',
+    ];
   }
 
   if (summary.productionStatus === 'ready') {
@@ -292,6 +314,9 @@ function verdictExplanation(summary: ReportSummary): string[] {
 }
 
 function execSummaryLine(summary: ReportSummary): string {
+  if (summary.capacityLimited) {
+    return `Protocol validation: ${summary.protocolPassed}/${summary.protocolTotal} checks passed. AI-powered checks did not run — today's capacity limit was reached.`;
+  }
   if (summary.criticalCount === 0 && summary.warningCount === 0 && summary.suggestionCount === 0) {
     return 'All protocol validation checks passed with no issues detected.';
   }
@@ -313,6 +338,22 @@ function formatDuration(ms: number): string {
 }
 
 // ─── Shared building blocks ─────────────────────────────────────────────────
+
+// Shown in place of Behavior/Compatibility content whenever the global daily
+// AI-check cap has been hit — a capacity notice, not a failure, so it always
+// renders with the neutral/info tone rather than the critical/error styling
+// used for real Layer 2 failures.
+const AI_CAPACITY_MESSAGE =
+  "AI-powered checks (Behavior & Compatibility) have reached today's capacity due to high traffic. Protocol validation above is still accurate. Please check back tomorrow.";
+
+function AiCapacityBanner() {
+  return (
+    <div className="border border-suggestion/30 bg-suggestion/5 rounded p-3 h-full flex items-center gap-2.5">
+      <span className="text-suggestion text-base flex-shrink-0" aria-hidden>ℹ</span>
+      <p className="text-xs text-fg/80 leading-snug">{AI_CAPACITY_MESSAGE}</p>
+    </div>
+  );
+}
 
 function Callout({ tone, title, children }: { tone: 'info' | 'warning' | 'success'; title?: string; children: React.ReactNode }) {
   const cls =
@@ -344,12 +385,18 @@ function CountBadge({ label, count, tone }: { label: string; count: number; tone
 function HealthGauge({ score, status }: { score: number; status: ReportSummary['productionStatus'] }) {
   const radius = 42;
   const circumference = 2 * Math.PI * radius;
+  const incomplete = status === 'incomplete';
   const pct = Math.max(0, Math.min(100, score));
-  const offset = circumference * (1 - pct / 100);
+  // An incomplete verdict has no meaningful score to plot — an empty ring
+  // avoids implying a real percentage was computed.
+  const offset = incomplete ? circumference : circumference * (1 - pct / 100);
   // Color must always agree with the production status badge next to it — a
   // high score with a critical issue (e.g. one failed schema) is still Not
   // Ready, so the gauge reads red even though the number itself is high.
-  const colorCls = status === 'ready' ? 'text-success' : status === 'minor' ? 'text-warning' : 'text-critical';
+  const colorCls =
+    status === 'ready' ? 'text-success' :
+    status === 'minor' ? 'text-warning' :
+    status === 'incomplete' ? 'text-suggestion' : 'text-critical';
   return (
     <div className="relative w-24 h-24 flex-shrink-0">
       <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
@@ -358,8 +405,8 @@ function HealthGauge({ score, status }: { score: number; status: ReportSummary['
           strokeDasharray={circumference} strokeDashoffset={offset} className={colorCls} />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-xl font-mono font-bold text-fg leading-none">{score}</span>
-        <span className="text-[9px] uppercase tracking-wide mt-1 text-muted">/ 100</span>
+        <span className="text-xl font-mono font-bold text-fg leading-none">{incomplete ? '—' : score}</span>
+        <span className="text-[9px] uppercase tracking-wide mt-1 text-muted">{incomplete ? 'N/A' : '/ 100'}</span>
       </div>
     </div>
   );
@@ -395,6 +442,7 @@ const PRODUCTION_STATUS_STYLE: Record<ReportSummary['productionStatus'], { emoji
   ready:      { emoji: '✅', label: 'Ready for Production',            cls: 'text-success bg-success/10 border-success/30' },
   minor:      { emoji: '⚠',  label: 'Ready with Minor Improvements',   cls: 'text-warning bg-warning/10 border-warning/30' },
   'not-ready':{ emoji: '❌', label: 'Not Ready',                       cls: 'text-critical bg-critical/10 border-critical/30' },
+  incomplete: { emoji: 'ℹ',  label: 'Verdict Unavailable',             cls: 'text-suggestion bg-suggestion/10 border-suggestion/30' },
 };
 
 function ProductionStatusBadge({ status }: { status: ReportSummary['productionStatus'] }) {
@@ -775,31 +823,41 @@ function ExecutiveSummaryTab({ summary }: { summary: ReportSummary }) {
             tone={protocolOk ? 'good' : 'bad'}
           />
         </div>
-        <div className={stageCls} style={stageStyle(100)}>
-          <LayerStatCard
-            label="Behavior"
-            value={behaviorValue}
-            fraction={summary.layer2Ran ? behaviorFraction : 0}
-            tone={summary.layer2Ran ? behaviorTone : 'neutral'}
-          />
-        </div>
-        <div className={stageCls} style={stageStyle(140)}>
-          <LayerStatCard
-            label="Compatibility"
-            value={!summary.layer2Ran ? 'Not run' : summary.compatibilityTotal > 0 ? `${summary.compatibilityPassed}/${summary.compatibilityTotal} Passed` : 'No scenarios'}
-            fraction={summary.layer2Ran ? compatibilityFraction : 0}
-            tone={summary.layer2Ran ? (compatibilityOk ? 'good' : 'neutral') : 'neutral'}
-            split={summary.layer2Ran && summary.compatibilityTotal > 0}
-          />
-        </div>
+        {summary.capacityLimited ? (
+          <div className={`sm:col-span-2 ${stageCls}`} style={stageStyle(100)}>
+            <AiCapacityBanner />
+          </div>
+        ) : (
+          <>
+            <div className={stageCls} style={stageStyle(100)}>
+              <LayerStatCard
+                label="Behavior"
+                value={behaviorValue}
+                fraction={summary.layer2Ran ? behaviorFraction : 0}
+                tone={summary.layer2Ran ? behaviorTone : 'neutral'}
+              />
+            </div>
+            <div className={stageCls} style={stageStyle(140)}>
+              <LayerStatCard
+                label="Compatibility"
+                value={!summary.layer2Ran ? 'Not run' : summary.compatibilityTotal > 0 ? `${summary.compatibilityPassed}/${summary.compatibilityTotal} Passed` : 'No scenarios'}
+                fraction={summary.layer2Ran ? compatibilityFraction : 0}
+                tone={summary.layer2Ran ? (compatibilityOk ? 'good' : 'neutral') : 'neutral'}
+                split={summary.layer2Ran && summary.compatibilityTotal > 0}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       <div className={`space-y-5 ${stageCls}`} style={stageStyle(180)}>
-        <div className="grid grid-cols-3 gap-3 max-w-md">
-          <CountBadge label="Critical" count={summary.criticalCount} tone="critical" />
-          <CountBadge label="Warnings" count={summary.warningCount} tone="warning" />
-          <CountBadge label="Suggestions" count={summary.suggestionCount} tone="suggestion" />
-        </div>
+        {!summary.capacityLimited && (
+          <div className="grid grid-cols-3 gap-3 max-w-md">
+            <CountBadge label="Critical" count={summary.criticalCount} tone="critical" />
+            <CountBadge label="Warnings" count={summary.warningCount} tone="warning" />
+            <CountBadge label="Suggestions" count={summary.suggestionCount} tone="suggestion" />
+          </div>
+        )}
 
         <p className="text-sm text-fg/80 leading-snug">{execSummaryLine(summary)}</p>
 
@@ -956,7 +1014,8 @@ function VerdictTab({ summary }: { summary: ReportSummary }) {
   const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
   const accentCls =
     summary.productionStatus === 'ready' ? 'border-l-success' :
-    summary.productionStatus === 'minor' ? 'border-l-warning' : 'border-l-critical';
+    summary.productionStatus === 'minor' ? 'border-l-warning' :
+    summary.productionStatus === 'incomplete' ? 'border-l-suggestion' : 'border-l-critical';
   const paragraph = verdictExplanation(summary).join(' ');
 
   return (
@@ -966,17 +1025,21 @@ function VerdictTab({ summary }: { summary: ReportSummary }) {
           <span>{s.emoji}</span><span className="text-fg">{s.label}</span>
         </div>
         <p className="text-sm text-fg/80 leading-relaxed mb-4">{paragraph}</p>
-        <div className="grid grid-cols-3 gap-3 max-w-md">
-          <CountBadge label="Critical" count={summary.criticalCount} tone="critical" />
-          <CountBadge label="Warnings" count={summary.warningCount} tone="warning" />
-          <CountBadge label="Suggestions" count={summary.suggestionCount} tone="suggestion" />
-        </div>
+        {!summary.capacityLimited && (
+          <div className="grid grid-cols-3 gap-3 max-w-md">
+            <CountBadge label="Critical" count={summary.criticalCount} tone="critical" />
+            <CountBadge label="Warnings" count={summary.warningCount} tone="warning" />
+            <CountBadge label="Suggestions" count={summary.suggestionCount} tone="suggestion" />
+          </div>
+        )}
       </div>
 
-      <Callout tone="info">
-        &ldquo;Ready for Production&rdquo; means schema valid and tested model selected the correct tool across
-        generated scenarios. Not exhaustive testing across all models or all user phrasings.
-      </Callout>
+      {!summary.capacityLimited && (
+        <Callout tone="info">
+          &ldquo;Ready for Production&rdquo; means schema valid and tested model selected the correct tool across
+          generated scenarios. Not exhaustive testing across all models or all user phrasings.
+        </Callout>
+      )}
     </div>
   );
 }
@@ -1570,7 +1633,8 @@ function ResultsContent() {
     return () => clearTimeout(t);
   }, [dataReady]);
 
-  const summary = dataReady && !finalizing && layer1 ? computeReportSummary(layer1, layer2) : null;
+  const isDailyCap = layer2Error === DAILY_CAP_MESSAGE;
+  const summary = dataReady && !finalizing && layer1 ? computeReportSummary(layer1, layer2, isDailyCap) : null;
 
   const handleExport = (format: ExportFormat) => {
     if (!layer1 || !summary) return;
@@ -1625,7 +1689,9 @@ function ResultsContent() {
               </div>
 
               <div id="panel-behavior" role="tabpanel" aria-labelledby="tab-behavior" className={tabPanelClass('behavior', activeTab)}>
-                {layer2Error ? (
+                {isDailyCap ? (
+                  <AiCapacityBanner />
+                ) : layer2Error ? (
                   <ErrorBox message={layer2Error} defaultHeader="Behavior validation failed" />
                 ) : layer2 ? (
                   <BehaviorTab report={layer2} expandedKeys={expandedKeys} onToggle={toggleKey} setKeysExpanded={setKeysExpanded} />
@@ -1635,7 +1701,9 @@ function ResultsContent() {
               </div>
 
               <div id="panel-compatibility" role="tabpanel" aria-labelledby="tab-compatibility" className={tabPanelClass('compatibility', activeTab)}>
-                {layer2Error ? (
+                {isDailyCap ? (
+                  <AiCapacityBanner />
+                ) : layer2Error ? (
                   <ErrorBox message={layer2Error} defaultHeader="Compatibility testing failed" />
                 ) : layer2 ? (
                   <CompatibilityTab report={layer2} expandedKeys={expandedKeys} onToggle={toggleKey} setKeysExpanded={setKeysExpanded} />

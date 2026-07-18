@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { runLayer2 } from '@/lib/layer2';
 import { getAnthropicApiKey } from '@/lib/env';
 import { checkRateLimit, getClientIp, rateLimitResponse } from '@/lib/rateLimit';
+import { checkDailyAiCap, dailyAiCapResponse } from '@/lib/dailyAiCap';
 import type { ToolInfo } from '@/lib/types';
 
 export const maxDuration = 60;
@@ -10,6 +11,11 @@ export async function POST(request: NextRequest) {
   const { allowed } = await checkRateLimit(getClientIp(request));
   if (!allowed) {
     return rateLimitResponse();
+  }
+
+  const { allowed: dailyCapAllowed } = await checkDailyAiCap();
+  if (!dailyCapAllowed) {
+    return dailyAiCapResponse();
   }
 
   try {
