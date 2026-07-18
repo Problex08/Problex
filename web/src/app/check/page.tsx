@@ -3,8 +3,6 @@
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
-const GITHUB_REPO_URL = 'https://github.com/jsva2002-cmyk/mcp-checker';
-
 function HomeContent() {
   const params = useSearchParams();
   const [url, setUrl] = useState(params.get('url') ?? '');
@@ -94,15 +92,6 @@ function HomeContent() {
               </div>
             )}
           </div>
-
-          <p className="text-[11px] text-muted/70">
-            For servers running locally via stdio, use the{' '}
-            <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer"
-              className="text-suggestion hover:underline">
-              CLI tool
-            </a>{' '}
-            instead.
-          </p>
 
           <button
             type="submit"
