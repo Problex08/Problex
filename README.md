@@ -8,7 +8,7 @@ This is what Problex found on DeepWiki's live MCP server:
 CHECK 1 · CLARITY ANALYSIS
 
   [2/3] read_wiki_contents
-       Clarity: 5/10  — Fails to specify which documentation page is
+       Clarity: 5/10 — Fails to specify which documentation page is
        returned or whether an agent must pass a topic name to retrieve
        specific content.
 
@@ -27,6 +27,10 @@ CHECK 3 · COMPATIBILITY TESTING
 ```
 
 A real, publicly hosted MCP server. Its schemas all validate — every structural check passes. But two of its three tools describe the same thing well enough that an agent reliably picks the wrong one, and Problex's scenario simulation caught the exact failure the ambiguity check predicted. No hand-written test case found this. It was generated, run, and confirmed automatically.
+
+**Reproduce this yourself:** go to [problex.dev/check](https://problex.dev/check), paste `https://mcp.deepwiki.com/mcp`, and run a full validation. The exact clarity score may shift slightly between runs — the underlying model isn't deterministic on scoring — but the confusion pair itself is structural and shows up consistently.
+
+Also tested against Microsoft's Release Communications server, Roundtable MCP (13 tools, 9+ confusion pairs flagged), and others — the pattern holds on every real server we've thrown at it, not just this one.
 
 ## What it is
 
@@ -57,44 +61,23 @@ Argument schema validation is code, not AI. LLM is only used where code cannot �
 
 - **✅ Ready for Production** — no critical issues or warnings found; safe to ship as-is.
 - **⚠ Ready with Minor Improvements** — no critical issues, but warnings (low-clarity descriptions, confirmed ambiguous pairs, or argument-quality issues) should be addressed before scaling usage.
-- **❌ Not Ready** — critical issues found (failed schemas or scenarios where the agent picked the wrong tool) that will misroute real requests; fix before shipping.
+- **❌ Not Ready** — one or more critical issues found (a schema failure, or a scenario where an agent picked the wrong tool) — these should be fixed before shipping.
 
-> Note: "Ready for Production" means schema valid and the tested model correctly selected tools across generated scenarios. Not exhaustive testing across all models, all possible phrasings, or edge cases outside generated scenarios.
+## CLI
 
-## Quick start (CLI)
-
-Requires Node 18+.
+For public MCP servers, the CLI runs the same checks as [problex.dev/check](https://problex.dev/check) from your terminal.
 
 ```bash
+git clone https://github.com/Problex08/Problex.git
+cd Problex
 npm install
-npm run check https://your-server.com/mcp --ai
+npm run check <url> --ai
 ```
 
-Layer 1 (protocol validation) needs no API key. Layer 2 (`--ai`) needs `ANTHROPIC_API_KEY` set in a `.env` file at the project root or exported in your shell.
+Requires an `ANTHROPIC_API_KEY` environment variable for Layer 2 checks. Omit `--ai` to run Layer 1 (protocol/schema validation) only, with no API key required.
 
-## Web app
+> The CLI currently supports the same Streamable HTTP transport as the web app — it does not yet support connecting to local servers over stdio.
 
-Live at **https://problex.dev**
+## Links
 
-No account required. 10 free checks per hour.
-
-- For private servers: use the Authorization Header field.
-- For stdio servers: use the CLI tool.
-
-## Tech stack
-
-- [`zod`](https://github.com/colinhacks/zod) v4 for programmatic JSON Schema and argument validation
-- [`@anthropic-ai/sdk`](https://github.com/anthropics/anthropic-sdk-typescript), model `claude-haiku-4-5`, for the AI reasoning layer only (clarity, ambiguity, scenario simulation)
-- [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk) for the MCP client / Streamable HTTP transport
-- CLI: TypeScript run via [`tsx`](https://github.com/privatenumber/tsx), [`commander`](https://github.com/tj/commander.js) for the CLI surface
-- Web: Next.js 15 (App Router) + React 19, Tailwind CSS, [Upstash Redis](https://upstash.com/) for rate limiting, deployed on Vercel
-
-## Roadmap
-
-- **V2** — Security scanning, check history, performance benchmarking
-- **V3** — GitHub Action / watch mode, multi-model testing, billing
-- **V4** — Enterprise features, badge program
-
-## Contributing
-
-Issues and PRs welcome. The root project (`src/checker.ts`) is the CLI; `web/` is a separate Next.js app that reimplements the same Layer 1/Layer 2 logic (`web/src/lib/layer1.ts`, `web/src/lib/layer2.ts`) behind API routes — if you change checker behavior, update both. Layer 2 prompts are deliberately strict about output format to keep verdicts specific instead of hedgy; if you touch those, sanity-check a few real runs, not just the schema. Open a PR against `main`.
+[problex.dev](https://problex.dev) · [Report an issue](https://github.com/Problex08/Problex/issues)
